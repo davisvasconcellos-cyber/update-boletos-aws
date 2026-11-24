@@ -1,0 +1,27 @@
+# Git ignore para update_boletos_aws
+build/
+dist/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.spec
+
+# Executáveis compilados e backups
+*.exe
+
+# Logs de execuções
+logs/*.log
+
+# Relatório interativo de saída
+log_dashboard/dashboard.html
+
+# Certificados de segurança e credenciais
+certs/*.pem
+certs/*.key
+*.pem
+
+# Planilhas e arquivos de dados brutos locais (LGPD / Sigilo)
+*.csv
+*.xlsx
+*.xls

@@ -55,6 +55,33 @@ def extrair_nosso_numero_11_digitos(nosso_numero_raw):
         
     return ""
 
+def extrair_nosso_numero_de_linha_digitavel(linha_digitavel):
+    """
+    Regra DERIVAR:
+    Em boletos Bradesco (Banco 237):
+    Linha digitável (47 dígitos com DVs):
+      Campo 1: 2379A.AAACC d1
+      Campo 2: C NNNN.NNNNN d2  (posições 11-20: 1 dígito carteira + 9 primeiros dígitos do Nosso Número)
+      Campo 3: NN CCC.CCCC0 d3  (posições 21-23: 2 últimos dígitos do Nosso Número)
+    Exemplo real do DBA:
+      '23793.17601 90000.138785 05074.295600 5 166100000...'
+      Campo 2: '90000.138785' -> parte útil = '000013878' (9 dígitos)
+      Campo 3: '05074.295600' -> parte útil = '05' (2 dígitos)
+      Resultado: '000013878' + '05' = '00001387805' (11 dígitos)
+    """
+    if not linha_digitavel:
+        return ""
+    limpo = re.sub(r'[\.\s]', '', str(linha_digitavel).strip())
+    if len(limpo) >= 32:
+        # Posições 11 a 20 (9 dígitos do nosso número)
+        p1 = limpo[11:20]
+        # Posições 21 a 23 (2 dígitos finais do nosso número)
+        p2 = limpo[21:23]
+        nosso_num = p1 + p2
+        if len(nosso_num) == 11 and nosso_num.isdigit():
+            return nosso_num
+    return ""
+
 def normalizar_status(status_raw):
     """
     Regra DERIVAR:
@@ -294,12 +321,22 @@ def formatar_registro(row_dict):
                         return val
         return default
 
+    # Campos complementares presentes no FingerPrint / CNAB ou na SP do DBA
+    linha_digitavel = get_val("last_transaction.gateway_response_fields.typeable_barcode", "Linha digitável", "Linha digitavel", "linha_digitavel", "digitableLine")
+    codigo_barras = get_val("last_transaction.gateway_response_fields.barcode", "Cód. de Barras", "Cod. de Barras", "codigo_barras", "barcode")
+    telefone = get_val("Número Telefone", "Numero Telefone", "telefone", "phone")
+    situacao_doador = get_val("Situação", "Situacao", "situacao_doador")
+
     # 1. Chave de Consulta (rid)
     nosso_numero_raw = get_val("Nosso Número", "NossoNumero", "ourNumber", "nosso_numero")
     rid = extrair_nosso_numero_11_digitos(nosso_numero_raw)
     
+    if not rid and linha_digitavel:
+        # Se não veio a coluna Nosso Número explícita, deriva diretamente da linha digitável Bradesco
+        rid = extrair_nosso_numero_de_linha_digitavel(linha_digitavel)
+
     if not rid:
-        # Se nosso número não tiver 11 dígitos válidos, podemos registrar falha ou usar número do documento
+        # Fallback para número do documento
         num_doc_fallback = extrair_digitos(get_val("Nº do documento", "NumeroDocumento", "documentNumber", "document_number"))
         if len(num_doc_fallback) >= 11:
             rid = num_doc_fallback[-11:]
@@ -315,13 +352,16 @@ def formatar_registro(row_dict):
 
     # 3. Identificadores Vindi
     url_pdf = get_val("PDF de cobrança", "PDF de cobranca", "url_pdf", "pdf_url")
-    charge_id = extrair_charge_id(get_val("vindi_charge_id", "chargeId", "id_cobranca", default=url_pdf))
-    bill_id = get_val("ID de Fatura Vindi", "ID Fatura Vindi", "billId", "id_fatura_vindi", "id_fatura")
+    charge_id = get_val("IdCharge", "id_charge", "vindi_charge_id", "chargeId", "id_cobranca")
+    if not charge_id and url_pdf:
+        charge_id = extrair_charge_id(url_pdf)
+
+    bill_id = get_val("IdFatura", "id_fatura", "ID de Fatura Vindi", "ID Fatura Vindi", "billId")
     subscription_id = get_val("Id de Assinatura", "subscriptionId", "id_assinatura_vindi", "id_assinatura")
-    customer_id = get_val("Id do Cliente Vindi", "customerId", "id_cliente_vindi", "id_cliente")
+    customer_id = get_val("CustomerId", "customer_id", "Id do Cliente Vindi", "customerId")
 
     # 4. Dados do Doador
-    nome_completo = get_val("Nome Completo", "Nome", "fullName", "donor_name")
+    nome_completo = get_val("name", "Nome Completo", "Nome", "fullName", "donor_name")
     primeiro_nome_raw = get_val("Primeiro e último nome", "Primeiro Nome", "firstName")
     if primeiro_nome_raw:
         first_name = primeiro_nome_raw.split()[0].strip()
@@ -365,11 +405,11 @@ def formatar_registro(row_dict):
     if not doc_number:
         doc_number = str(int(rid)) if rid.isdigit() else rid
 
-    valor_raw = get_val("Valor", "amount", "valor_boleto")
+    valor_raw = get_val("amount", "Valor", "last_transaction.amount", "valor_boleto")
     valor_float = parse_valor_monetario(valor_raw)
 
-    due_date = parse_data_iso(get_val("Data de Vencimento", "DataVencimento", "dueDate"))
-    issue_date = parse_data_iso(get_val("Data de Emissão", "DataEmissao", "issueDate"))
+    due_date = parse_data_iso(get_val("due_at", "Data de Vencimento", "DataVencimento", "dueDate"))
+    issue_date = parse_data_iso(get_val("CreatedDate", "Data de Emissão", "DataEmissao", "issueDate"))
     if not issue_date:
         issue_date = datetime.date.today().strftime('%Y-%m-%d')
 
@@ -380,12 +420,6 @@ def formatar_registro(row_dict):
 
     local_pagamento = get_val("Local de Pagamento", "LocalPagamento", "paymentPlace", default="EM QUALQUER BANCO OU CORRESPONDENTE NÃO BANCÁRIO.")
     codigo_banco = "237"
-
-    # Campos complementares presentes no FingerPrint / CNAB
-    linha_digitavel = get_val("Linha digitável", "Linha digitavel", "linha_digitavel", "digitableLine")
-    codigo_barras = get_val("Cód. de Barras", "Cod. de Barras", "codigo_barras", "barcode")
-    telefone = get_val("Número Telefone", "Numero Telefone", "telefone", "phone")
-    situacao_doador = get_val("Situação", "Situacao", "situacao_doador")
 
     # Monta a estrutura JSON conforme contrato da página (especificado no PDF)
     payload_json = {

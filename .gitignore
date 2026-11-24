@@ -17,9 +17,11 @@ logs/*.log
 log_dashboard/dashboard.html
 
 # Certificados de segurança e credenciais
-certs/*.pem
-certs/*.key
+certs/
+ssh/
 *.pem
+*.key
+id_*
 
 # Planilhas e arquivos de dados brutos locais (LGPD / Sigilo)
 *.csv

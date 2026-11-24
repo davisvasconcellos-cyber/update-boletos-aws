@@ -1,15 +1,22 @@
 @echo off
 cd /d "%~dp0"
+
+:: Localiza o executavel do Python
+set PYTHON_CMD=python
+if exist "%LOCALAPPDATA%\Python\bin\python.exe" (
+    set "PYTHON_CMD=%LOCALAPPDATA%\Python\bin\python.exe"
+)
+
 echo =========================================
 echo Instalando dependencias necessarias...
 echo =========================================
-py -m pip install pyinstaller pyodbc pymysql sshtunnel paramiko cryptography || python -m pip install pyinstaller pyodbc pymysql sshtunnel paramiko cryptography
+"%PYTHON_CMD%" -m pip install pyinstaller pyodbc pymysql sshtunnel paramiko cryptography
 
 echo.
 echo =========================================
 echo Compilando a aplicacao para .exe...
 echo =========================================
-py -m PyInstaller --onefile main.py || python -m PyInstaller --onefile main.py
+"%PYTHON_CMD%" -m PyInstaller --clean --onefile --name main main.py
 
 echo.
 echo =========================================

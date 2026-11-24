@@ -25,6 +25,7 @@ class AWSMysqlTarget:
         self.ssh_port = 22
         self.ssh_user = "ec2-user"
         self.ssh_key_path = ""
+        self.ssh_key_passphrase = ""
         
         self.mysql_host = "127.0.0.1"
         self.mysql_port = 3306
@@ -62,6 +63,7 @@ class AWSMysqlTarget:
                 self.ssh_host = s.get('ssh_host', fallback='').strip()
                 self.ssh_port = s.getint('ssh_port', fallback=22)
                 self.ssh_user = s.get('ssh_user', fallback='ec2-user').strip()
+                self.ssh_key_passphrase = s.get('ssh_key_passphrase', fallback='').strip()
                 key_rel = s.get('ssh_key_path', fallback='').strip()
                 if key_rel:
                     self.ssh_key_path = os.path.normpath(os.path.join(self.base_dir, key_rel))
@@ -96,12 +98,16 @@ class AWSMysqlTarget:
                     return False, f"Arquivo de chave SSH (.pem) nao encontrado em: {self.ssh_key_path}"
 
                 self.log(f"[SSH INFO] Iniciando tunel SSH para {self.ssh_host}:{self.ssh_port} via chave {os.path.basename(self.ssh_key_path)}...")
-                self.tunnel = SSHTunnelForwarder(
-                    (self.ssh_host, self.ssh_port),
-                    ssh_username=self.ssh_user,
-                    ssh_pkey=self.ssh_key_path,
-                    remote_bind_address=(self.mysql_host, self.mysql_port)
-                )
+                tunnel_kwargs = {
+                    'ssh_address_or_host': (self.ssh_host, self.ssh_port),
+                    'ssh_username': self.ssh_user,
+                    'ssh_pkey': self.ssh_key_path,
+                    'remote_bind_address': (self.mysql_host, self.mysql_port)
+                }
+                if self.ssh_key_passphrase:
+                    tunnel_kwargs['ssh_private_key_password'] = self.ssh_key_passphrase
+
+                self.tunnel = SSHTunnelForwarder(**tunnel_kwargs)
                 self.tunnel.start()
                 local_port = self.tunnel.local_bind_port
                 self.log(f"[SSH SUCCESS] Tunel SSH ativo! Porta local mapeada: {local_port}")

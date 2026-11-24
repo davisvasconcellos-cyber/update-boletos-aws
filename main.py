@@ -45,7 +45,14 @@ def main():
     # Tratamento de argumentos via linha de comando
     if len(sys.argv) > 1:
         arg1 = sys.argv[1].lower().strip()
-        if arg1 in ["testmode", "test", "--test", "-t"]:
+        if arg1 in ["check", "--check", "-c", "diagnostico"]:
+            print("========================================================")
+            print("Executando DIAGNOSTICO de Acesso ao SQL Server e Procedure...")
+            print("========================================================")
+            from model.source_sqlserver import diagnostico_procedure
+            diagnostico_procedure()
+            return
+        elif arg1 in ["testmode", "test", "--test", "-t"]:
             test_mode = True
             if len(sys.argv) > 2:
                 try:

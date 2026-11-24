@@ -64,21 +64,95 @@ def get_conexao(connect_timeout_seconds=None):
 def testar_conexao_db():
     """
     Teste rápido de conectividade com o SQL Server antes de rodar a extração principal.
-    Verifica se o servidor responde e se a procedure existe.
+    Verifica se o servidor responde e se a procedure existe no banco de dados configurado.
     """
     cfg = get_db_config()
     servidor = cfg["servidor_ip"]
+    database = cfg["database"]
     proc_name = cfg["procedure_name"]
     try:
         conn = get_conexao(connect_timeout_seconds=10)
         cursor = conn.cursor()
         cursor.execute("SELECT 1")
         cursor.fetchone()
+        
+        # Checa se a procedure existe no banco configurado
+        sql_check = f"SELECT ROUTINE_SCHEMA, ROUTINE_NAME FROM INFORMATION_SCHEMA.ROUTINES WHERE ROUTINE_NAME = '{proc_name}'"
+        cursor.execute(sql_check)
+        row = cursor.fetchone()
+        if not row:
+            cursor.execute(f"SELECT name FROM sys.procedures WHERE name = '{proc_name}'")
+            row = cursor.fetchone()
+            
         cursor.close()
         conn.close()
-        return True, f"Conexao com o SQL Server ({servidor}) estabelecida com sucesso."
+        
+        if row:
+            return True, f"Conexao com o SQL Server ({servidor}) OK e procedure '{proc_name}' confirmada no banco '{database}'."
+        else:
+            return False, f"Conexao com o SQL Server ({servidor}) OK, mas a procedure '{proc_name}' NAO foi encontrada no banco '{database}'. Verifique se o nome do banco no config.ini esta correto (esperado: VINDI)."
     except Exception as e:
         return False, f"Falha no teste de conexao com o SQL Server ({servidor}): {str(e)}"
+
+def diagnostico_procedure(log_callback=print):
+    """
+    Executa um diagnóstico detalhado do SQL Server e da Stored Procedure.
+    Mostra informações de schema, colunas retornadas e amostra de registro.
+    """
+    cfg = get_db_config()
+    servidor = cfg["servidor_ip"]
+    database = cfg["database"]
+    proc_name = cfg["procedure_name"]
+    d_inicio, d_fim = resolver_datas_filtro(cfg["data_inicio"], cfg["data_fim"])
+    
+    log_callback(f"[DIAGNOSTICO] Servidor: {servidor} | Banco: {database} | Procedure: {proc_name}")
+    log_callback(f"[DIAGNOSTICO] Periodo de teste: '{d_inicio}' ate '{d_fim}'")
+    
+    try:
+        conn = get_conexao(connect_timeout_seconds=10)
+        cursor = conn.cursor()
+        log_callback(f"[DIAGNOSTICO] Conexao com SQL Server ({servidor}) no banco '{database}' realizada com sucesso!")
+        
+        # 1. Checa no INFORMATION_SCHEMA
+        sql_check = f"SELECT ROUTINE_SCHEMA, ROUTINE_NAME, CREATED, LAST_ALTERED FROM INFORMATION_SCHEMA.ROUTINES WHERE ROUTINE_NAME = '{proc_name}'"
+        cursor.execute(sql_check)
+        row = cursor.fetchone()
+        if row:
+            log_callback(f"[DIAGNOSTICO] SP encontrada: Schema={row[0]} | Nome={row[1]} | Ultima alteracao={row[3]}")
+        else:
+            cursor.execute(f"SELECT name FROM sys.procedures WHERE name = '{proc_name}'")
+            row2 = cursor.fetchone()
+            if row2:
+                log_callback(f"[DIAGNOSTICO] SP encontrada via sys.procedures: {row2[0]}")
+            else:
+                log_callback(f"[DIAGNOSTICO ALERTA] Procedure '{proc_name}' nao encontrada no banco '{database}'.")
+        
+        # 2. Executa a procedure
+        log_callback(f"[DIAGNOSTICO] Executando: EXEC {proc_name} '{d_inicio}', '{d_fim}' ...")
+        cursor.execute(f"EXEC {proc_name} '{d_inicio}', '{d_fim}'")
+        
+        if cursor.description:
+            colunas = [col[0] for col in cursor.description]
+            log_callback(f"[DIAGNOSTICO] Total de colunas retornadas: {len(colunas)}")
+            log_callback(f"[DIAGNOSTICO] Nomes das colunas: {', '.join(colunas)}")
+            
+            primeira_linha = cursor.fetchone()
+            if primeira_linha:
+                log_callback(f"[DIAGNOSTICO] Registro de exemplo recuperado com sucesso!")
+                for col, val in zip(colunas, primeira_linha):
+                    log_callback(f"   * {col}: {val}")
+            else:
+                log_callback(f"[DIAGNOSTICO] A procedure executou perfeitamente, mas nao ha faturas no periodo '{d_inicio}' ate '{d_fim}'.")
+        else:
+            log_callback(f"[DIAGNOSTICO] Procedure executada sem conjunto de resultados retornado.")
+            
+        cursor.close()
+        conn.close()
+        log_callback("[DIAGNOSTICO FINAL]: Teste concluido com 100% de SUCESSO!")
+        return True
+    except Exception as e:
+        log_callback(f"[DIAGNOSTICO ERRO]: {e}")
+        return False
 
 def resolver_datas_filtro(cfg_data_inicio, cfg_data_fim, last_sync_timestamp=None):
     """

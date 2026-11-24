@@ -197,6 +197,9 @@ max_records = 50
 db_query_timeout_seconds = 180
 db_fetch_chunk_size = 1000
 last_sync_timestamp = 
+# Gera backup físico em CSV dos dados formatados enviados nesta execução
+gerar_csv_backup = true
+diretorio_csv_backup = backups_csv/
 
 [LOG]
 diretorio = logs/

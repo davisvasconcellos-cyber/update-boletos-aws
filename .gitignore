@@ -24,6 +24,7 @@ ssh/
 id_*
 
 # Planilhas e arquivos de dados brutos locais (LGPD / Sigilo)
+backups_csv/
 *.csv
 *.xlsx
 *.xls

@@ -69,6 +69,41 @@ class SyncController:
         except Exception as e:
             self.log(f"[CONFIG ERROR] Falha ao atualizar last_sync_timestamp no config.ini: {str(e)}")
 
+    def exportar_csv_backup(self, registros, timestamp_str):
+        """Exporta um arquivo CSV com todos os registros formatados para o MySQL."""
+        try:
+            import csv
+            config = configparser.ConfigParser()
+            gerar_csv = False
+            dir_backup = "backups_csv"
+            
+            if os.path.exists(self.config_path):
+                config.read(self.config_path, encoding='utf-8')
+                if 'PROCESSAMENTO' in config:
+                    gerar_csv = config['PROCESSAMENTO'].getboolean('gerar_csv_backup', fallback=False)
+                    dir_backup = config['PROCESSAMENTO'].get('diretorio_csv_backup', fallback='backups_csv').strip()
+            
+            if not gerar_csv or not registros:
+                return
+
+            caminho_dir = os.path.normpath(os.path.join(self.base_dir, dir_backup))
+            os.makedirs(caminho_dir, exist_ok=True)
+            
+            # Formato do arquivo: boletos_upload_YYYY-MM-DD_HH-MM-SS.csv
+            nome_data = timestamp_str.replace(' ', '_').replace(':', '-')
+            filename = f"boletos_upload_{nome_data}.csv"
+            filepath = os.path.join(caminho_dir, filename)
+
+            colunas = list(registros[0].keys())
+            with open(filepath, 'w', encoding='utf-8-sig', newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=colunas, delimiter=';')
+                writer.writeheader()
+                writer.writerows(registros)
+
+            self.log(f"[BACKUP CSV] Arquivo CSV fisico gerado com sucesso: {filepath} ({len(registros)} registros)")
+        except Exception as e:
+            self.log(f"[BACKUP CSV ERRO] Falha ao gerar arquivo de backup CSV: {str(e)}")
+
     def executar_fluxo(self):
         """Executa a rotina completa de sincronização."""
         modo_str = f" (MODO DE TESTE - 1 LOTE DE ATE {self.max_records})" if self.test_mode else f" (MODO NORMAL - LOTES DE ATE {self.max_records})"
@@ -129,6 +164,9 @@ class SyncController:
                 self.log(f"[MODO TESTE ATIVADO] Enviando 1 unico lote de teste contendo {tamanho_lote} registro(s).")
             else:
                 tamanho_lote = self.max_records
+
+            # Backup físico em CSV dos dados formatados (se ativado no config.ini)
+            self.exportar_csv_backup(registros, inicio_execucao)
 
             total_a_enviar = len(registros)
             lotes = [registros[i:i + tamanho_lote] for i in range(0, total_a_enviar, tamanho_lote)]

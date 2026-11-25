@@ -70,14 +70,47 @@ class AWSMysqlTarget:
                     
             if 'MYSQL_AWS' in config:
                 m = config['MYSQL_AWS']
-                self.mysql_host = m.get('mysql_host', fallback='').strip()
-                self.mysql_port = m.getint('mysql_port', fallback=3306)
-                self.mysql_user = m.get('mysql_user', fallback='').strip()
-                self.mysql_password = m.get('mysql_password', fallback='').strip()
-                self.mysql_database = m.get('mysql_database', fallback='msf_cobranca').strip()
+                mysql_url = m.get('mysql_url', fallback='').strip()
+                if mysql_url:
+                    # Suporte a URL: mysql://usuario:senha@host:porta/banco
+                    parsed = self.parse_mysql_url(mysql_url)
+                    if parsed:
+                        self.mysql_host = parsed['host']
+                        self.mysql_port = parsed['port']
+                        self.mysql_user = parsed['user']
+                        self.mysql_password = parsed['password']
+                        self.mysql_database = parsed['database']
+                
+                # Se campos individuais forem informados, eles sobrescrevem ou preenchem
+                if not getattr(self, 'mysql_host', ''):
+                    self.mysql_host = m.get('mysql_host', fallback='').strip()
+                if not getattr(self, 'mysql_port', None):
+                    self.mysql_port = m.getint('mysql_port', fallback=3306)
+                if not getattr(self, 'mysql_user', ''):
+                    self.mysql_user = m.get('mysql_user', fallback='').strip()
+                if not getattr(self, 'mysql_password', ''):
+                    self.mysql_password = m.get('mysql_password', fallback='').strip()
+                if not getattr(self, 'mysql_database', ''):
+                    self.mysql_database = m.get('mysql_database', fallback='msf_cobranca').strip()
                 self.mysql_target_table = m.get('mysql_target_table', fallback='boletos').strip()
         except Exception as e:
             self.log(f"[CONFIG WARNING] Falha ao ler parametros de destino no config.ini: {str(e)}")
+
+    @staticmethod
+    def parse_mysql_url(url):
+        """Converte mysql://user:pass@host:port/database em dict de parâmetros."""
+        import re
+        m = re.match(r'^mysql://([^:]+):(.+)@([^:/]+)(?::(\d+))?/(.+)$', url.strip())
+        if m:
+            user, pwd, host, port, db = m.groups()
+            return {
+                'user': user,
+                'password': pwd,
+                'host': host,
+                'port': int(port) if port else 3306,
+                'database': db.split('?')[0]
+            }
+        return None
 
     def is_mockup(self):
         return self.ambiente == "mockup"
@@ -140,10 +173,78 @@ class AWSMysqlTarget:
                 cursor.execute("SELECT 1")
                 cursor.fetchone()
 
-            return True, f"Conexao com MySQL AWS ({self.mysql_database}) estabelecida com sucesso."
+            # Valida e cria a tabela de boletos automaticamente se não existir
+            self.garantir_schema_tabela()
+
+            return True, f"Conexao com MySQL ({self.mysql_database}) estabelecida e tabela `{self.mysql_target_table}` verificada com sucesso."
         except Exception as e:
             self.fechar_conexoes()
-            return False, f"Falha ao conectar ao destino AWS MySQL via SSH: {str(e)}"
+            return False, f"Falha ao conectar ao destino MySQL (ou tunel SSH): {str(e)}"
+
+    def garantir_schema_tabela(self):
+        """
+        Garante que a tabela de destino (padrão 'boletos') exista no banco MySQL,
+        com todas as 38 colunas relacionais, payload_json, chaves e índices.
+        """
+        ddl = f"""
+        CREATE TABLE IF NOT EXISTS `{self.mysql_target_table}` (
+            `rid` VARCHAR(30) NOT NULL,
+            `nosso_numero` VARCHAR(30) NULL,
+            `numero_documento` VARCHAR(50) NULL,
+            `status` VARCHAR(20) DEFAULT 'open',
+            `valor` DECIMAL(10,2) DEFAULT 0.00,
+            `data_emissao` DATE NULL,
+            `data_vencimento` DATE NULL,
+            `data_vencimento_sugerida` DATE NULL,
+            `id_cobranca_vindi` VARCHAR(50) NULL,
+            `id_fatura_vindi` VARCHAR(50) NULL,
+            `id_assinatura_vindi` VARCHAR(50) NULL,
+            `id_cliente_vindi` VARCHAR(50) NULL,
+            `cpf_cnpj` VARCHAR(20) NULL,
+            `cpf_cnpj_mascarado` VARCHAR(30) NULL,
+            `tipo_pessoa` VARCHAR(5) NULL,
+            `nome_completo` VARCHAR(255) NULL,
+            `primeiro_nome` VARCHAR(100) NULL,
+            `email_mascarado` VARCHAR(150) NULL,
+            `telefone` VARCHAR(30) NULL,
+            `situacao_doador` VARCHAR(50) NULL,
+            `endereco` VARCHAR(255) NULL,
+            `numero` VARCHAR(50) NULL,
+            `complemento` VARCHAR(150) NULL,
+            `bairro` VARCHAR(100) NULL,
+            `cidade` VARCHAR(100) NULL,
+            `uf` VARCHAR(10) NULL,
+            `cep` VARCHAR(20) NULL,
+            `metodo_pagamento` VARCHAR(80) NULL,
+            `agencia` VARCHAR(10) NULL,
+            `conta` VARCHAR(20) NULL,
+            `digito_conta` VARCHAR(5) NULL,
+            `carteira` VARCHAR(10) NULL,
+            `codigo_banco` VARCHAR(10) DEFAULT '237',
+            `local_pagamento` VARCHAR(255) NULL,
+            `linha_digitavel` VARCHAR(100) NULL,
+            `codigo_barras` VARCHAR(150) NULL,
+            `beneficiario_nome` VARCHAR(150) NULL,
+            `beneficiario_endereco` VARCHAR(255) NULL,
+            `beneficiario_documento` VARCHAR(30) NULL,
+            `payload_json` LONGTEXT NULL,
+            `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (`rid`),
+            INDEX `idx_boletos_status` (`status`),
+            INDEX `idx_boletos_vencimento` (`data_vencimento`),
+            INDEX `idx_boletos_cpf_cnpj` (`cpf_cnpj`),
+            INDEX `idx_boletos_vindi_fatura` (`id_fatura_vindi`),
+            INDEX `idx_boletos_vindi_cobranca` (`id_cobranca_vindi`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        """
+        try:
+            with self.db_conn.cursor() as cursor:
+                cursor.execute(ddl)
+            self.db_conn.commit()
+            self.log(f"[DB SCHEMA] Tabela `{self.mysql_target_table}` garantida/verificada no banco `{self.mysql_database}`.")
+        except Exception as e:
+            self.log(f"[DB SCHEMA AVISO] Falha ao verificar/criar tabela `{self.mysql_target_table}`: {e}")
 
     def enviar_lote(self, lote_registros):
         """
@@ -251,3 +352,51 @@ class AWSMysqlTarget:
             except Exception:
                 pass
             self.tunnel = None
+
+def diagnostico_mysql(config_path=None, log_callback=print):
+    """
+    Testa a conectividade com o banco MySQL (direta ou via SSH),
+    mostra informações da versão, banco de dados e garante a criação da tabela de boletos.
+    """
+    log_callback("========================================================")
+    log_callback("Executando DIAGNOSTICO de Conexao e Schema do MySQL...")
+    log_callback("========================================================")
+    
+    # Força ambiente sandbox para testar conexão real
+    target = TargetAWSMySQL(ambiente_override="sandbox", config_path=config_path, log_callback=log_callback)
+    
+    log_callback(f"[DIAGNOSTICO MYSQL] Host: {target.mysql_host}:{target.mysql_port}")
+    log_callback(f"[DIAGNOSTICO MYSQL] Usuario: {target.mysql_user}")
+    log_callback(f"[DIAGNOSTICO MYSQL] Banco Destino: {target.mysql_database}")
+    log_callback(f"[DIAGNOSTICO MYSQL] Tunel SSH Ativo: {target.use_ssh}")
+    
+    sucesso, msg = target.autenticar()
+    if not sucesso:
+        log_callback(f"[DIAGNOSTICO MYSQL ERRO]: {msg}")
+        return False
+        
+    log_callback(f"[DIAGNOSTICO MYSQL SUCESSO]: {msg}")
+    
+    try:
+        with target.db_conn.cursor() as cursor:
+            cursor.execute("SELECT VERSION(), DATABASE();")
+            versao, banco_atual = cursor.fetchone()
+            log_callback(f"[DIAGNOSTICO MYSQL] Versao do MySQL Server: {versao} | Banco Atual: {banco_atual}")
+            
+            # Checa quantidade de registros na tabela
+            cursor.execute(f"SELECT COUNT(*) FROM `{target.mysql_target_table}`;")
+            total = cursor.fetchone()[0]
+            log_callback(f"[DIAGNOSTICO MYSQL] Tabela `{target.mysql_target_table}`: {total} registro(s) existente(s).")
+            
+            # Mostra colunas da tabela
+            cursor.execute(f"DESCRIBE `{target.mysql_target_table}`;")
+            colunas_desc = cursor.fetchall()
+            log_callback(f"[DIAGNOSTICO MYSQL] Total de colunas na tabela `{target.mysql_target_table}`: {len(colunas_desc)}")
+            
+        target.fechar_conexoes()
+        log_callback("[DIAGNOSTICO MYSQL FINAL]: Conexao e Schema MySQL 100% OPERACIONAIS!")
+        return True
+    except Exception as e:
+        log_callback(f"[DIAGNOSTICO MYSQL ERRO]: {e}")
+        target.fechar_conexoes()
+        return False

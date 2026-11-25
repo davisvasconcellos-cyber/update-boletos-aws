@@ -252,15 +252,24 @@ dashboard_html = log_dashboard/dashboard.html
 ## 7. Como Executar
 
 ### 7.1. Execução via Scripts Batch (.bat)
-- **Diagnóstico da Stored Procedure:** execute [testar_procedure.bat](file:///c:/Users/davis.vasconcellos/OneDrive%20-%20MSF/Documentos/MSF/PHYTON/update_boletos_aws/testar_procedure.bat) para validar a conexão e checar se a procedure existe na base `VINDI`.
+- **Diagnóstico do SQL Server:** execute [testar_procedure.bat](file:///c:/Users/davis.vasconcellos/OneDrive%20-%20MSF/Documentos/MSF/PHYTON/update_boletos_aws/testar_procedure.bat) para validar a conexão e checar se a procedure existe na base `VINDI`.
+- **Diagnóstico e Inicialização do MySQL:** execute [testar_mysql.bat](file:///c:/Users/davis.vasconcellos/OneDrive%20-%20MSF/Documentos/MSF/PHYTON/update_boletos_aws/testar_mysql.bat) para testar a conexão com o banco MySQL e criar/validar automaticamente a tabela `boletos` e seus índices.
 - **Modo Teste (1 Lote Limitado):** execute [rodar_teste.bat](file:///c:/Users/davis.vasconcellos/OneDrive%20-%20MSF/Documentos/MSF/PHYTON/update_boletos_aws/rodar_teste.bat).
 - **Modo Normal (Produção):** execute [rodar_update.bat](file:///c:/Users/davis.vasconcellos/OneDrive%20-%20MSF/Documentos/MSF/PHYTON/update_boletos_aws/rodar_update.bat).
 
 ### 7.2. Execução via Linha de Comando (CLI)
 ```bash
-# Diagnóstico completo de acesso e verificação de schema da procedure
+# Diagnóstico completo (SQL Server + MySQL e checagem de schema)
 main.exe check
 python main.py check
+
+# Diagnóstico e preparação exclusiva do banco MySQL (cria a tabela se não existir)
+main.exe check-mysql
+python main.py check-mysql
+
+# Diagnóstico exclusivo do SQL Server
+main.exe check-sql
+python main.py check-sql
 
 # Executa em modo normal (lendo config.ini)
 main.exe

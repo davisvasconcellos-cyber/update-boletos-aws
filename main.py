@@ -47,8 +47,20 @@ def main():
         arg1 = sys.argv[1].lower().strip()
         if arg1 in ["check", "--check", "-c", "diagnostico"]:
             print("========================================================")
-            print("Executando DIAGNOSTICO de Acesso ao SQL Server e Procedure...")
+            print("Executando DIAGNOSTICO COMPLETO (SQL Server e MySQL)...")
             print("========================================================")
+            from model.source_sqlserver import diagnostico_procedure
+            from model.target_aws_mysql import diagnostico_mysql
+            print("\n>>> 1. TESTE DO SQL SERVER (Origem):")
+            diagnostico_procedure()
+            print("\n>>> 2. TESTE DO MYSQL (Destino e Schema):")
+            diagnostico_mysql(config_path=config_path)
+            return
+        elif arg1 in ["check-mysql", "mysql", "--check-mysql", "init-db", "check_mysql"]:
+            from model.target_aws_mysql import diagnostico_mysql
+            diagnostico_mysql(config_path=config_path)
+            return
+        elif arg1 in ["check-sql", "sql", "--check-sql"]:
             from model.source_sqlserver import diagnostico_procedure
             diagnostico_procedure()
             return

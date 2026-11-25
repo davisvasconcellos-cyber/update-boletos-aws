@@ -159,7 +159,7 @@ O arquivo [config.ini](file:///c:/Users/davis.vasconcellos/OneDrive%20-%20MSF/Do
 [banco]
 # IP ou hostname do servidor SQL Server de origem
 servidor_ip = 192.168.1.20
-database = SALESFORCE
+database = VINDI
 procedure_name = CarregaFaturasBoletoWS
 connect_timeout_seconds = 10
 
@@ -211,21 +211,31 @@ dashboard_html = log_dashboard/dashboard.html
 ## 6. Como Executar
 
 ### 6.1. Execução via Scripts Batch (.bat)
-- **Modo Normal (Produção):** execute [rodar_update.bat](file:///c:/Users/davis.vasconcellos/OneDrive%20-%20MSF/Documentos/MSF/PHYTON/update_boletos_aws/rodar_update.bat).
+- **Diagnóstico da Stored Procedure:** execute [testar_procedure.bat](file:///c:/Users/davis.vasconcellos/OneDrive%20-%20MSF/Documentos/MSF/PHYTON/update_boletos_aws/testar_procedure.bat) para validar a conexão e checar se a procedure existe na base `VINDI`.
 - **Modo Teste (1 Lote Limitado):** execute [rodar_teste.bat](file:///c:/Users/davis.vasconcellos/OneDrive%20-%20MSF/Documentos/MSF/PHYTON/update_boletos_aws/rodar_teste.bat).
+- **Modo Normal (Produção):** execute [rodar_update.bat](file:///c:/Users/davis.vasconcellos/OneDrive%20-%20MSF/Documentos/MSF/PHYTON/update_boletos_aws/rodar_update.bat).
 
 ### 6.2. Execução via Linha de Comando (CLI)
 ```bash
+# Diagnóstico completo de acesso e verificação de schema da procedure
+main.exe check
+# ou via Python:
+python main.py check
+
 # Executa em modo normal (lendo config.ini)
+main.exe
 python main.py
 
 # Força modo de teste (processa apenas 1 lote de até 50 registros, sem avançar corte)
+main.exe testmode
 python main.py testmode
 
 # Força modo de teste com limite customizado (ex.: 10 registros)
+main.exe testmode 10
 python main.py testmode 10
 
 # Força modo normal
+main.exe normal
 python main.py normal
 ```
 

@@ -13,7 +13,7 @@ import configparser
 from util.paths import get_base_dir
 
 class AWSMysqlTarget:
-    def __init__(self, config_path=None, log_callback=None):
+    def __init__(self, config_path=None, log_callback=None, ambiente_override=None):
         self.log_callback = log_callback
         self.base_dir = get_base_dir()
         self.config_path = config_path or os.path.join(self.base_dir, 'config.ini')
@@ -35,6 +35,8 @@ class AWSMysqlTarget:
         self.mysql_target_table = "boletos"
         
         self.carregar_config()
+        if ambiente_override:
+            self.ambiente = ambiente_override
         
         # Objetos de conexão em modo real
         self.tunnel = None
@@ -363,7 +365,7 @@ def diagnostico_mysql(config_path=None, log_callback=print):
     log_callback("========================================================")
     
     # Força ambiente sandbox para testar conexão real
-    target = TargetAWSMySQL(ambiente_override="sandbox", config_path=config_path, log_callback=log_callback)
+    target = AWSMysqlTarget(ambiente_override="sandbox", config_path=config_path, log_callback=log_callback)
     
     log_callback(f"[DIAGNOSTICO MYSQL] Host: {target.mysql_host}:{target.mysql_port}")
     log_callback(f"[DIAGNOSTICO MYSQL] Usuario: {target.mysql_user}")

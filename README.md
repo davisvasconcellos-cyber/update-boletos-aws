@@ -10,11 +10,12 @@ Desenvolvida pela equipe de tecnologia de **Médicos Sem Fronteiras (MSF)**, seg
 
 Esta aplicação automatiza a disponibilização dos dados de faturas de boletos para a página e API de segunda via e renegociação de doações de MSF.
 
-- **Origem dos Dados:** Stored Procedure `CarregaFaturasBoletoWS` no SQL Server (`SALESFORCE`).
+- **Origem dos Dados:** Stored Procedure `CarregaFaturasBoletoWS` no SQL Server (banco de dados `VINDI` no host `192.168.1.20`).
 - **Camada de Transformação:** Regras de negócio e sanitização de dados baseadas no modelo **FingerPrint (CNAB)** e na especificação de 32 campos da Vindi/Bradesco.
-- **Destino dos Dados:** Banco MySQL na AWS (tabela `boletos`), acessado de forma segura através de um túnel SSH com autenticação por chave privada (`.pem`).
+- **Destino dos Dados:** Banco MySQL na AWS (tabela `boletos`), acessado de forma segura através de um túnel SSH com autenticação por chave privada (`.pem` / `id_ed25519`).
 - **Padrão de Resiliência:** 
-  - **Modo Mockup (`ambiente = mockup`)**: permite rodar a extração real no SQL Server, aplicar todas as regras de derivação e gerar relatórios visuais no Dashboard sem depender da liberação prévia de portas de rede na AWS.
+  - **Modo Mockup (`ambiente = mockup`)**: permite rodar a extração real no SQL Server, aplicar todas as regras de derivação, gerar CSVs de auditoria e relatórios visuais no Dashboard sem depender da liberação prévia de portas de rede na AWS.
+  - **Backup Físico em CSV (`gerar_csv_backup = true`)**: exporta automaticamente uma cópia física em `backups_csv/` de todos os registros enriquecidos enviados em cada execução.
   - **Corte Incremental (`last_sync_timestamp`)**: garante idempotência e rastreabilidade entre as execuções diárias.
 
 ---
@@ -46,7 +47,46 @@ update_boletos_aws/
 
 ---
 
-## 3. Mapeamento Completo das Colunas — FingerPrint (CNAB) ➔ AWS MySQL
+## 3. Origem dos Dados — Stored Procedure `CarregaFaturasBoletoWS` (Base `VINDI`)
+
+A extração é realizada chamando a Stored Procedure do SQL Server:
+```sql
+USE VINDI;
+EXEC CarregaFaturasBoletoWS 'YYYY-MM-DD', 'YYYY-MM-DD';
+```
+
+A procedure retorna **15 colunas oficiais**:
+
+| # | Coluna Retornada pelo SQL Server | Tipo / Exemplo | Mapeamento no Destino (`model/formatter.py`) |
+| :-: | :--- | :--- | :--- |
+| **1** | `IdFatura` | `555262732` | `id_fatura_vindi` / `vindi.billId` / `Gateway_Opportunity_ID` |
+| **2** | `IdCharge` | `563925391` | `id_cobranca_vindi` / `vindi.chargeId` (ID para Pix / Cartão) |
+| **3** | `name` | `Ana Luiza Romitelli` | `donor.fullName` e `donor.firstName` ("Ana") |
+| **4** | `last_transaction.gateway_response_fields.barcode` | `<NWnnwnNnWw...>` | `codigo_barras` / `boleto.barcode` |
+| **5** | `last_transaction.gateway_response_fields.typeable_barcode` | `23793.17601 90000.133117 33074.295602 1 16320000004100` | `linha_digitavel` / `boleto.digitableLine` e derivação do **Nosso Número** (`rid`) |
+| **6** | `CustomerId` | `30733143` | `id_cliente_vindi` / `vindi.customerId` |
+| **7** | `due_at` | `2026-11-16 23:59:59` | `data_vencimento` / `boleto.dueDate` (formato `AAAA-MM-DD`) |
+| **8** | `amount` | `41.0` | `valor` / `boleto.amount` (float decimal) |
+| **9** | `last_transaction.amount` | `41.0` | Conferência de valor da transação |
+| **10** | `CreatedDate` | `2026-10-15 10:12:42` | `data_emissao` / `boleto.issueDate` (formato `AAAA-MM-DD`) |
+| **11** | `Gateway_Opportunity_ID` | `555262732` | `gateway_opportunity_id` (vínculo de oportunidade) |
+| **12** | `Id` | `006U500000gB9XdIAK` | `salesforce_id` (ID da Oportunidade no Salesforce) |
+| **13** | `MetodoPagamento__c` | `Boleto` | `plan.paymentMethod` (`online_bank_slip_bradesco_recorrente`) |
+| **14** | `Gateway_ID__c` | `Vindi` | `gateway` |
+| **15** | `status` | `pending` | `status` (mapeado para `open` na interface do doador) |
+
+### 3.1. Derivação Matemática do Nosso Número (`rid` - 11 dígitos)
+Quando o nosso número não vem em coluna separada, o `formatter.py` o extrai diretamente da Linha Digitável do Bradesco (237):
+- **Estrutura da Linha Digitável Bradesco:**
+  `2379A.AAAAX 9NNNN.NNNNNY NNCCC.CCCCZ K FFFF0000000000`
+- **Regra de extração:**
+  1. Campo 2 (`90000.133117`): posições úteis 5 a 13 fornecem os **9 primeiros dígitos** (`000013311`).
+  2. Campo 3 (`33074.295602`): as primeiras 2 posições fornecem os **2 dígitos finais** (`14` ou `33`).
+  3. Resultado: **11 dígitos perfeitos** (exemplo: `00001331114`), exatamente o `rid` registrado no Bradesco e no arquivo CNAB.
+
+---
+
+## 4. Mapeamento Completo das Colunas — FingerPrint (CNAB) ➔ AWS MySQL
 
 A tabela abaixo documenta a correspondência exata entre o modelo de dados extraído no arquivo **FingerPrint (CNAB de Boletos Bradesco)** e a estrutura normalizada gravada no MySQL e no payload da API:
 
@@ -89,7 +129,7 @@ A tabela abaixo documenta a correspondência exata entre o modelo de dados extra
 
 ---
 
-## 4. Exemplo de Payload JSON Formatado pela Aplicação
+## 5. Exemplo de Payload JSON Formatado pela Aplicação
 
 O campo `payload_json` gerado para cada registro segue rigorosamente o contrato esperado pela API e pela aplicação web de pagamentos:
 
@@ -151,7 +191,7 @@ O campo `payload_json` gerado para cada registro segue rigorosamente o contrato 
 
 ---
 
-## 5. Arquivo de Configuração (`config.ini`)
+## 6. Arquivo de Configuração (`config.ini`)
 
 O arquivo [config.ini](file:///c:/Users/davis.vasconcellos/OneDrive%20-%20MSF/Documentos/MSF/PHYTON/update_boletos_aws/config.ini) centraliza todos os parâmetros da rotina:
 
@@ -180,7 +220,8 @@ use_ssh_tunnel = true
 ssh_host = ec2-xx-xx-xx-xx.compute-1.amazonaws.com
 ssh_port = 22
 ssh_user = ec2-user
-ssh_key_path = certs/chave_aws.pem
+ssh_key_path = ssh/id_ed25519
+ssh_key_passphrase = 
 
 [MYSQL_AWS]
 # Banco de dados MySQL destino na AWS
@@ -208,18 +249,17 @@ dashboard_html = log_dashboard/dashboard.html
 
 ---
 
-## 6. Como Executar
+## 7. Como Executar
 
-### 6.1. Execução via Scripts Batch (.bat)
+### 7.1. Execução via Scripts Batch (.bat)
 - **Diagnóstico da Stored Procedure:** execute [testar_procedure.bat](file:///c:/Users/davis.vasconcellos/OneDrive%20-%20MSF/Documentos/MSF/PHYTON/update_boletos_aws/testar_procedure.bat) para validar a conexão e checar se a procedure existe na base `VINDI`.
 - **Modo Teste (1 Lote Limitado):** execute [rodar_teste.bat](file:///c:/Users/davis.vasconcellos/OneDrive%20-%20MSF/Documentos/MSF/PHYTON/update_boletos_aws/rodar_teste.bat).
 - **Modo Normal (Produção):** execute [rodar_update.bat](file:///c:/Users/davis.vasconcellos/OneDrive%20-%20MSF/Documentos/MSF/PHYTON/update_boletos_aws/rodar_update.bat).
 
-### 6.2. Execução via Linha de Comando (CLI)
+### 7.2. Execução via Linha de Comando (CLI)
 ```bash
 # Diagnóstico completo de acesso e verificação de schema da procedure
 main.exe check
-# ou via Python:
 python main.py check
 
 # Executa em modo normal (lendo config.ini)
@@ -241,16 +281,25 @@ python main.py normal
 
 ---
 
-## 7. Como Compilar para Executável (.exe)
+## 8. Como Compilar para Executável (.exe)
 
 O script [Compilador.bat](file:///c:/Users/davis.vasconcellos/OneDrive%20-%20MSF/Documentos/MSF/PHYTON/update_boletos_aws/Compilador.bat) automatiza todo o processo de build:
 1. Instala as dependências necessárias (`pyinstaller`, `pyodbc`, `pymysql`, `sshtunnel`, `paramiko`, `cryptography`);
 2. Cria backup automático do executável anterior (`main_YYYYMMDD_HHMM.exe`);
-3. Compila a aplicação em um único arquivo binário (`main.exe`) na raiz do projeto.
+3. Compila a aplicação em um único arquivo binário independente (`main.exe`) na raiz do projeto.
 
 ---
 
-## 8. Dashboard HTML Interativo
+## 9. Backup Físico em CSV (`backups_csv/`)
+
+A aplicação conta com um recurso nativo de contingência contábil e auditoria:
+- Toda execução com a flag `gerar_csv_backup = true` no `config.ini` grava um arquivo CSV contendo todos os registros formatados com as colunas finais preparadas para a AWS.
+- Nome do arquivo gerado: `backups_csv/boletos_upload_YYYY-MM-DD_HH-MM-SS.csv`.
+- Permite importar manualmente ou auditar valores, vencimentos, códigos de barras e CPFs a qualquer momento diretamente no Microsoft Excel.
+
+---
+
+## 10. Dashboard HTML Interativo
 
 Ao término de cada execução (mesmo em caso de falhas ou cancelamento), a aplicação gera ou atualiza o painel visual em:
 `log_dashboard/dashboard.html`
@@ -260,3 +309,14 @@ O dashboard fornece:
 - **Accordion Histórico:** Lista cronológica de todas as execuções registradas em `logs/`.
 - **Aba "Lista de Falhas":** Destaque seletivo de registros que apresentaram inconsistência cadastral para ação rápida.
 - **Aba "Log Bruto de Execução":** Terminal completo da execução com saída detalhada das amostras JSON.
+
+---
+
+## 11. Guia de Resolução de Problemas (Troubleshooting)
+
+| Sintoma / Erro | Causa Provável | Solução |
+| :--- | :--- | :--- |
+| `Could not find stored procedure 'CarregaFaturasBoletoWS'. (2812)` | O parâmetro `database` no `config.ini` está apontando para outro banco (ex.: `SALESFORCE`). | Altere `database = VINDI` no `config.ini`. A procedure reside oficialmente no banco `VINDI`. |
+| `SQL Server inexistente ou acesso negado. (17)` | A máquina que está executando não tem rota de rede interna para `192.168.1.20`. | Execute a aplicação a partir de um servidor da rede interna (ex.: `D:\Programas\update_boletos_aws`) ou conecte a VPN de MSF. |
+| `Authentication failed` no túnel SSH | A chave privada `id_ed25519` possui senha configurada. | Preencha o parâmetro `ssh_key_passphrase` na seção `[SSH]` do `config.ini`. |
+| `Diretório temporário não encontrado no .exe` | Executável PyInstaller rodando sem resolver diretório base relativo. | A aplicação utiliza o helper `util.paths.get_base_dir()` que detecta se está rodando via script ou frozen `.exe`. |

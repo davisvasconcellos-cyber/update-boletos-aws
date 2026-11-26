@@ -64,6 +64,35 @@ class DashboardGenerator:
                     line_clean = line.strip()
                     if "✗ [FALHA/INVALIDO]" in line_clean or "ERRO CRITICO" in line_clean:
                         falhas_list.append(line_clean)
+
+                # Extração do tempo total da operação (duração)
+                duracao_str = "0s"
+                m_dur = re.search(r'Duracao Total:\s*([^\)]+)\)', content)
+                if m_dur:
+                    duracao_str = m_dur.group(1).strip()
+                else:
+                    primeiro_ts = None
+                    ultimo_ts = None
+                    for line in lines:
+                        m_ts = re.match(r'^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]', line)
+                        if m_ts:
+                            try:
+                                ts = datetime.datetime.strptime(m_ts.group(1), '%Y-%m-%d %H:%M:%S')
+                                if primeiro_ts is None:
+                                    primeiro_ts = ts
+                                ultimo_ts = ts
+                            except Exception:
+                                pass
+                    if primeiro_ts and ultimo_ts and ultimo_ts >= primeiro_ts:
+                        diff_sec = int((ultimo_ts - primeiro_ts).total_seconds())
+                        m, s = divmod(diff_sec, 60)
+                        h, m = divmod(m, 60)
+                        if h > 0:
+                            duracao_str = f"{h}h {m}m {s}s"
+                        elif m > 0:
+                            duracao_str = f"{m}m {s}s"
+                        else:
+                            duracao_str = f"{s}s"
                         
                 # Adiciona falhas de validação se houver
                 qtd_falhas_exibidas = len(falhas_list) + total_falhas
@@ -103,6 +132,7 @@ class DashboardGenerator:
                                     {badges_str}
                                 </div>
                                 <div>
+                                    <span class="badge bg-dark text-white me-2"><i class="fas fa-stopwatch me-1"></i>{duracao_str}</span>
                                     <span class="badge bg-secondary me-2">Lidos: {total_processados}</span>
                                     <span class="badge bg-success me-2">Ok: {total_atualizados + total_criados}</span>
                                     <span class="badge bg-danger me-2">Falhas: {total_falhas + len(falhas_list)}</span>
@@ -115,29 +145,35 @@ class DashboardGenerator:
                         <div class="accordion-body bg-white rounded-bottom">
                             
                             <!-- Métricas Cards -->
-                            <div class="row text-center mb-4 g-3">
-                                <div class="col-md-3">
-                                    <div class="p-3 bg-light rounded border">
-                                        <div class="text-muted small">Total Processados</div>
+                            <div class="row text-center mb-4 g-2">
+                                <div class="col-md-2">
+                                    <div class="p-3 bg-light rounded border h-100">
+                                        <div class="text-muted small">Total Lidos</div>
                                         <div class="fs-4 fw-bold text-dark">{total_processados}</div>
                                     </div>
                                 </div>
                                 <div class="col-md-3">
-                                    <div class="p-3 bg-light rounded border border-success">
+                                    <div class="p-3 bg-light rounded border border-success h-100">
                                         <div class="text-muted small">Atualizados / Inseridos</div>
                                         <div class="fs-4 fw-bold text-success">{total_atualizados + total_criados}</div>
                                     </div>
                                 </div>
-                                <div class="col-md-3">
-                                    <div class="p-3 bg-light rounded border border-danger">
-                                        <div class="text-muted small">Falhas / Rejeições</div>
+                                <div class="col-md-2">
+                                    <div class="p-3 bg-light rounded border border-danger h-100">
+                                        <div class="text-muted small">Falhas</div>
                                         <div class="fs-4 fw-bold text-danger">{total_falhas + len(falhas_list)}</div>
                                     </div>
                                 </div>
+                                <div class="col-md-2">
+                                    <div class="p-3 bg-light rounded border border-info h-100">
+                                        <div class="text-muted small">Tempo Total</div>
+                                        <div class="fs-4 fw-bold text-primary"><i class="fas fa-stopwatch me-1"></i>{duracao_str}</div>
+                                    </div>
+                                </div>
                                 <div class="col-md-3">
-                                    <div class="p-3 bg-light rounded border">
+                                    <div class="p-3 bg-light rounded border h-100">
                                         <div class="text-muted small">Modo de Operação</div>
-                                        <div class="fs-6 fw-bold text-primary">{"Teste Limitado" if is_test_mode else "Completa"} ({"Mockup" if is_mockup else "AWS MySQL"})</div>
+                                        <div class="fs-6 fw-bold text-secondary mt-1">{"Teste Limitado" if is_test_mode else "Completa"} ({"Mockup" if is_mockup else "AWS MySQL"})</div>
                                     </div>
                                 </div>
                             </div>

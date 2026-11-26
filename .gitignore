@@ -16,6 +16,9 @@ logs/*.log
 # Relatório interativo de saída
 log_dashboard/dashboard.html
 
+# Arquivos de configuracao com senhas e dados locais
+config.ini
+
 # Certificados de segurança e credenciais
 certs/
 ssh/

@@ -111,7 +111,8 @@ class SyncController:
         self.log(f"[AMBIENTE DESTINO]: {self.target.ambiente.upper()} (Tabela: {self.target.mysql_target_table})")
 
         try:
-            inicio_execucao = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            inicio_dt = datetime.datetime.now()
+            inicio_execucao = inicio_dt.strftime('%Y-%m-%d %H:%M:%S')
 
             # 1. Teste de conectividade com o banco de dados SQL Server
             self.log("Testando conectividade com o SQL Server...")
@@ -194,7 +195,17 @@ class SyncController:
             self.log(f"ERRO CRITICO durante a execucao: {str(e)}")
         finally:
             self.target.fechar_conexoes()
-            self.log("=== FIM DA EXECUCAO ===")
+            fim_dt = datetime.datetime.now()
+            duracao_segundos = int((fim_dt - inicio_dt).total_seconds())
+            m, s = divmod(duracao_segundos, 60)
+            h, m = divmod(m, 60)
+            if h > 0:
+                tempo_str = f"{h}h {m}m {s}s"
+            elif m > 0:
+                tempo_str = f"{m}m {s}s"
+            else:
+                tempo_str = f"{s}s"
+            self.log(f"=== FIM DA EXECUCAO (Duracao Total: {tempo_str}) ===")
             
             # 6. Geração do Dashboard HTML
             try:

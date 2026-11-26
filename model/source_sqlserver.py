@@ -263,14 +263,21 @@ def buscar_e_formatar_boletos(limite=None, data_corte=None, query_timeout_second
         if is_ok:
             registros_formatados.append(reg_formatado)
         else:
-            id_ref = row.get("Nosso Número") or row.get("Nº do documento") or f"Linha_{i}"
+            id_fat = row.get("IdFatura") or ""
+            id_chg = row.get("IdCharge") or ""
+            nome_cli = row.get("name") or row.get("Nome Completo") or ""
+            doc_cli = row.get("CPF") or row.get("registry_code") or ""
+            id_ref = f"Linha_{i} (Fatura: {id_fat} | Charge: {id_chg} | Doador: {nome_cli} | CPF: {doc_cli})"
             falhas_validacao.append({
                 "id": str(id_ref),
                 "motivo": motivo_erro,
                 "registro_raw": row
             })
             if log_callback:
-                log_callback(f"✗ [FALHA/INVALIDO] ID/NossoNumero: {id_ref} | Motivo: {motivo_erro}")
+                import json
+                raw_json = json.dumps(row, default=str, ensure_ascii=False)
+                log_callback(f"✗ [FALHA/INVALIDO] {id_ref} | Motivo: {motivo_erro}")
+                log_callback(f"  ↳ [DADOS BRUTOS]: {raw_json}")
 
         if log_callback and (i % max(1, int(fetch_chunk_size)) == 0 or i == total_registros):
             log_callback(f"[DB FORMATACAO] Registros formatados: {i}/{total_registros}")

@@ -104,6 +104,41 @@ class SyncController:
         except Exception as e:
             self.log(f"[BACKUP CSV ERRO] Falha ao gerar arquivo de backup CSV: {str(e)}")
 
+    def exportar_csv_falhas(self, falhas_validacao, timestamp_str):
+        """Exporta um arquivo CSV específico com as inconsistências para análise e ajuste com o DBA."""
+        if not falhas_validacao:
+            return None
+        try:
+            import csv
+            caminho_dir = os.path.normpath(os.path.join(self.base_dir, 'backups_csv'))
+            os.makedirs(caminho_dir, exist_ok=True)
+            nome_data = timestamp_str.replace(' ', '_').replace(':', '-')
+            filename = f"inconsistencias_dba_{nome_data}.csv"
+            filepath = os.path.join(caminho_dir, filename)
+
+            linhas_csv = []
+            for item in falhas_validacao:
+                r_dict = dict(item.get("registro_raw", {}))
+                linha = {
+                    "MOTIVO_INCONSISTENCIA": item.get("motivo", ""),
+                    "REF_IDENTIFICADOR": item.get("id", "")
+                }
+                for k, v in r_dict.items():
+                    linha[k] = str(v) if v is not None else ""
+                linhas_csv.append(linha)
+
+            colunas = list(linhas_csv[0].keys())
+            with open(filepath, 'w', encoding='utf-8-sig', newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=colunas, delimiter=';')
+                writer.writeheader()
+                writer.writerows(linhas_csv)
+
+            self.log(f"[DBA EXPORT] Arquivo CSV com {len(linhas_csv)} registro(s) inconsistente(s) gerado para o DBA em: {filepath}")
+            return filepath
+        except Exception as e:
+            self.log(f"[DBA EXPORT ERRO] Falha ao exportar CSV de inconsistências: {str(e)}")
+            return None
+
     def executar_fluxo(self):
         """Executa a rotina completa de sincronização."""
         modo_str = f" (MODO DE TESTE - 1 LOTE DE ATE {self.max_records})" if self.test_mode else f" (MODO NORMAL - LOTES DE ATE {self.max_records})"
@@ -135,6 +170,9 @@ class SyncController:
                 log_callback=self.log
             )
             self.log(f"[DB RESULTADO STATUS]: {sp_msg}")
+
+            if falhas_validacao:
+                self.exportar_csv_falhas(falhas_validacao, inicio_execucao)
 
             if not sp_ok:
                 self.log("Processo interrompido por falha na execucao da procedure no SQL Server.")

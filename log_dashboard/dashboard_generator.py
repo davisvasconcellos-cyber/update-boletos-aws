@@ -10,6 +10,7 @@ import os
 import glob
 import datetime
 import re
+import json
 from util.paths import get_base_dir
 
 class DashboardGenerator:
@@ -60,10 +61,27 @@ class DashboardGenerator:
                 
                 # Extrai lista de falhas individuais ou inconsistências
                 falhas_list = []
+                current_falha = None
+                csv_dba_arquivo = None
+
                 for line in lines:
                     line_clean = line.strip()
-                    if "✗ [FALHA/INVALIDO]" in line_clean or "ERRO CRITICO" in line_clean:
-                        falhas_list.append(line_clean)
+                    if "[DBA EXPORT]" in line_clean and "inconsistencias_dba_" in line_clean:
+                        m_csv = re.search(r'(inconsistencias_dba_[^\s]+\.csv)', line_clean)
+                        if m_csv:
+                            csv_dba_arquivo = m_csv.group(1)
+
+                    if "✗ [FALHA/INVALIDO]" in line_clean:
+                        current_falha = {"texto": line_clean, "dados_brutos": None}
+                        falhas_list.append(current_falha)
+                    elif "↳ [DADOS BRUTOS]:" in line_clean and current_falha:
+                        try:
+                            json_str = line_clean.split("↳ [DADOS BRUTOS]:", 1)[1].strip()
+                            current_falha["dados_brutos"] = json.loads(json_str)
+                        except Exception:
+                            current_falha["dados_brutos"] = line_clean
+                    elif "ERRO CRITICO" in line_clean:
+                        falhas_list.append({"texto": line_clean, "dados_brutos": None})
 
                 # Extração do tempo total da operação (duração)
                 duracao_str = "0s"
@@ -108,17 +126,48 @@ class DashboardGenerator:
                 
                 # Renderiza itens da aba de falhas
                 falhas_items_html = ""
+                if csv_dba_arquivo:
+                    falhas_items_html += f"""
+                    <div class="alert alert-warning d-flex align-items-center mb-3 py-2 px-3 border border-warning shadow-sm">
+                        <i class="fas fa-file-csv fs-4 text-warning me-3"></i>
+                        <div>
+                            <strong>Arquivo de inconsistências gerado para o DBA:</strong><br/>
+                            <code class="text-dark bg-white px-2 py-1 rounded border">backups_csv/{csv_dba_arquivo}</code>
+                        </div>
+                    </div>
+                    """
+
                 if falhas_list:
-                    for f_item in falhas_list:
-                        item_formatado = f_item
+                    for f_dict in falhas_list:
+                        item_txt = f_dict["texto"]
+                        raw_data = f_dict.get("dados_brutos")
+                        
+                        item_formatado = item_txt
                         if "[FALHA/INVALIDO]" in item_formatado:
                             item_formatado = item_formatado.replace("[FALHA/INVALIDO]", '<span class="text-danger fw-bold">[FALHA/INVALIDO]</span>')
-                            item_formatado = re.sub(r'ID(?:/NossoNumero)?:\s*([^\s|]+)', r'ID: <span class="text-danger fw-bold">\1</span>', item_formatado)
-                            item_formatado = re.sub(r'Motivo:\s*(.+)$', r'Motivo: <span class="text-danger">\1</span>', item_formatado)
-                        elif "ERRO CRITICO" in item_formatado:
-                            item_formatado = f'<span class="text-danger fw-bold">{item_formatado}</span>'
+                            item_formatado = re.sub(r'Motivo:\s*(.+)$', r'Motivo: <span class="badge bg-danger-subtle text-danger border border-danger-subtle py-1 px-2">\1</span>', item_formatado)
 
-                        falhas_items_html += f'<li class="list-group-item bg-white text-dark border-0 border-bottom border-danger-subtle py-2 px-3"><i class="fas fa-exclamation-triangle text-danger me-2"></i>{item_formatado}</li>'
+                        raw_toggle_html = ""
+                        if raw_data:
+                            if isinstance(raw_data, dict):
+                                formatted_json = json.dumps(raw_data, indent=2, ensure_ascii=False)
+                            else:
+                                formatted_json = str(raw_data)
+                            raw_toggle_html = f"""
+                            <details class="mt-2">
+                                <summary class="btn btn-sm btn-outline-secondary py-0 px-2" style="font-size: 11px; cursor: pointer;">
+                                    <i class="fas fa-database me-1"></i> Ver todas as 25 colunas do SQL Server (Registro Bruto)
+                                </summary>
+                                <pre class="bg-dark text-light p-2 mt-2 rounded font-monospace" style="font-size: 11px; max-height: 250px; overflow-y: auto;">{formatted_json}</pre>
+                            </details>
+                            """
+
+                        falhas_items_html += f"""
+                        <li class="list-group-item bg-white text-dark border-0 border-bottom border-danger-subtle py-2 px-3">
+                            <i class="fas fa-exclamation-triangle text-danger me-2"></i>{item_formatado}
+                            {raw_toggle_html}
+                        </li>
+                        """
                 else:
                     falhas_items_html = '<li class="list-group-item bg-white text-success border-0 border-bottom border-success-subtle py-2 px-3"><i class="fas fa-check-circle text-success me-2"></i>Nenhuma falha individual registrada neste processamento.</li>'
 

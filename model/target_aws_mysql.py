@@ -294,108 +294,138 @@ class AWSMysqlTarget:
             return True, resumo
 
         # ---------------- MODO REAL (AWS MYSQL) ----------------
-        try:
-            if self.mysql_target_table == "boletos_segunda_via":
-                # Tabela oficial de produção/homologação
-                # ATENÇÃO: As colunas `id` (auto_increment), `tipo_pessoa` (STORED GENERATED),
-                # `expira_em` (STORED GENERATED), `criado_em` e `atualizado_em` NÃO DEVEM ser inseridas!
-                colunas = [
-                    "lote", "numero_documento", "nosso_numero", "carteira",
-                    "id_fatura_vindi", "id_cobranca_vindi", "id_assinatura_vindi", "code_oportunidade",
-                    "metodo_pagamento", "status_vindi", "status", "situacao_doador", "pago_em",
-                    "nome_curto", "nome_completo", "email", "cpf_cnpj", "receber_carta",
-                    "logradouro", "numero_endereco", "complemento", "cep", "bairro", "cidade", "uf", "pais",
-                    "telefone_tipo", "telefone_numero", "telefone_ramal",
-                    "banco_codigo", "banco_nome", "agencia", "conta", "conta_digito",
-                    "beneficiario", "local_pagamento", "especie_doc", "aceite",
-                    "data_emissao", "data_vencimento", "data_vencimento_sugerida", "vencimento_frente_carta",
-                    "valor", "linha_digitavel", "codigo_barras", "pdf_url"
-                ]
-                cols_str = ", ".join([f"`{c}`" for c in colunas])
-                placeholders = ", ".join(["%s"] * len(colunas))
-                update_cols = [c for c in colunas if c not in ("id_fatura_vindi", "nosso_numero", "carteira")]
-                update_clause = ", ".join([f"`{c}` = VALUES(`{c}`)" for c in update_cols])
-            else:
-                # Tabela legado 'boletos'
-                colunas = [
-                    "rid", "nosso_numero", "numero_documento", "status", "valor",
-                    "data_emissao", "data_vencimento", "data_vencimento_sugerida",
-                    "id_cobranca_vindi", "id_fatura_vindi", "id_assinatura_vindi", "id_cliente_vindi",
-                    "cpf_cnpj", "cpf_cnpj_mascarado", "tipo_pessoa", "nome_completo", "primeiro_nome",
-                    "email_mascarado", "telefone", "situacao_doador", "endereco", "numero", "complemento", "bairro", "cidade", "uf", "cep",
-                    "metodo_pagamento", "agencia", "conta", "digito_conta", "carteira", "codigo_banco",
-                    "local_pagamento", "linha_digitavel", "codigo_barras", "beneficiario_nome", "beneficiario_endereco", "beneficiario_documento",
-                    "payload_json"
-                ]
-                cols_str = ", ".join([f"`{c}`" for c in colunas])
-                placeholders = ", ".join(["%s"] * len(colunas))
-                update_clause = ", ".join([f"`{c}` = VALUES(`{c}`)" for c in colunas if c != "rid"])
+        max_tentativas_lote = 3
+        for tentativa_lote in range(1, max_tentativas_lote + 1):
+            try:
+                if self.mysql_target_table == "boletos_segunda_via":
+                    # Tabela oficial de produção/homologação
+                    # ATENÇÃO: As colunas `id` (auto_increment), `tipo_pessoa` (STORED GENERATED),
+                    # `expira_em` (STORED GENERATED), `criado_em` e `atualizado_em` NÃO DEVEM ser inseridas!
+                    colunas = [
+                        "lote", "numero_documento", "nosso_numero", "carteira",
+                        "id_fatura_vindi", "id_cobranca_vindi", "id_assinatura_vindi", "code_oportunidade",
+                        "metodo_pagamento", "status_vindi", "status", "situacao_doador", "pago_em",
+                        "nome_curto", "nome_completo", "email", "cpf_cnpj", "receber_carta",
+                        "logradouro", "numero_endereco", "complemento", "cep", "bairro", "cidade", "uf", "pais",
+                        "telefone_tipo", "telefone_numero", "telefone_ramal",
+                        "banco_codigo", "banco_nome", "agencia", "conta", "conta_digito",
+                        "beneficiario", "local_pagamento", "especie_doc", "aceite",
+                        "data_emissao", "data_vencimento", "data_vencimento_sugerida", "vencimento_frente_carta",
+                        "valor", "linha_digitavel", "codigo_barras", "pdf_url"
+                    ]
+                    cols_str = ", ".join([f"`{c}`" for c in colunas])
+                    placeholders = ", ".join(["%s"] * len(colunas))
+                    update_cols = [c for c in colunas if c not in ("id_fatura_vindi", "nosso_numero", "carteira")]
+                    update_clause = ", ".join([f"`{c}` = VALUES(`{c}`)" for c in update_cols])
+                else:
+                    # Tabela legado 'boletos'
+                    colunas = [
+                        "rid", "nosso_numero", "numero_documento", "status", "valor",
+                        "data_emissao", "data_vencimento", "data_vencimento_sugerida",
+                        "id_cobranca_vindi", "id_fatura_vindi", "id_assinatura_vindi", "id_cliente_vindi",
+                        "cpf_cnpj", "cpf_cnpj_mascarado", "tipo_pessoa", "nome_completo", "primeiro_nome",
+                        "email_mascarado", "telefone", "situacao_doador", "endereco", "numero", "complemento", "bairro", "cidade", "uf", "cep",
+                        "metodo_pagamento", "agencia", "conta", "digito_conta", "carteira", "codigo_banco",
+                        "local_pagamento", "linha_digitavel", "codigo_barras", "beneficiario_nome", "beneficiario_endereco", "beneficiario_documento",
+                        "payload_json"
+                    ]
+                    cols_str = ", ".join([f"`{c}`" for c in colunas])
+                    placeholders = ", ".join(["%s"] * len(colunas))
+                    update_clause = ", ".join([f"`{c}` = VALUES(`{c}`)" for c in colunas if c != "rid"])
 
-            single_row_placeholder = "(" + ", ".join(["%s"] * len(colunas)) + ")"
-            sql_single = f"""
-                INSERT INTO `{self.mysql_target_table}` ({cols_str})
-                VALUES {single_row_placeholder}
-                ON DUPLICATE KEY UPDATE {update_clause}
-            """
+                single_row_placeholder = "(" + ", ".join(["%s"] * len(colunas)) + ")"
+                sql_single = f"""
+                    INSERT INTO `{self.mysql_target_table}` ({cols_str})
+                    VALUES {single_row_placeholder}
+                    ON DUPLICATE KEY UPDATE {update_clause}
+                """
 
-            atualizados_ou_criados = 0
-            falhas = []
+                atualizados_ou_criados = 0
+                falhas = []
 
-            # Inserção em blocos multi-row (chunks de até 500 registros por query).
-            # Elimina o overhead de latência do túnel SSH (150ms por round-trip aos EUA),
-            # reduzindo o tempo de 60.000 registros de ~2h30 para apenas ~1 a 2 minutos!
-            chunk_size = 500
+                # Inserção em blocos multi-row (chunks de até 500 registros por query).
+                # Elimina o overhead de latência do túnel SSH (150ms por round-trip aos EUA),
+                # reduzindo o tempo de 60.000 registros de ~2h30 para apenas ~1 a 2 minutos!
+                chunk_size = 500
 
-            with self.db_conn.cursor() as cursor:
-                for i in range(0, total_lote, chunk_size):
-                    chunk = lote_registros[i:i + chunk_size]
-                    multi_placeholders = ", ".join([single_row_placeholder] * len(chunk))
-                    sql_multi = f"""
-                        INSERT INTO `{self.mysql_target_table}` ({cols_str})
-                        VALUES {multi_placeholders}
-                        ON DUPLICATE KEY UPDATE {update_clause}
-                    """
-                    valores_multi = []
-                    for reg in chunk:
-                        for c in colunas:
-                            valores_multi.append(reg.get(c))
-
-                    try:
-                        cursor.execute(sql_multi, valores_multi)
-                        atualizados_ou_criados += len(chunk)
-                    except Exception:
-                        # Fallback resiliente: se o bloco falhar, executa linha a linha para capturar a falha individual
+                with self.db_conn.cursor() as cursor:
+                    for i in range(0, total_lote, chunk_size):
+                        chunk = lote_registros[i:i + chunk_size]
+                        multi_placeholders = ", ".join([single_row_placeholder] * len(chunk))
+                        sql_multi = f"""
+                            INSERT INTO `{self.mysql_target_table}` ({cols_str})
+                            VALUES {multi_placeholders}
+                            ON DUPLICATE KEY UPDATE {update_clause}
+                        """
+                        valores_multi = []
                         for reg in chunk:
-                            valores = [reg.get(c) for c in colunas]
-                            try:
-                                cursor.execute(sql_single, valores)
-                                atualizados_ou_criados += 1
-                            except Exception as err_item:
-                                rid_ref = reg.get("nosso_numero") or reg.get("rid", "N/A")
-                                nome_ref = reg.get("nome_completo", "")
-                                motivo = str(err_item)
-                                falhas.append(f"✗ [FALHA/INVALIDO] NossoNumero: {rid_ref} | Nome/Ref: {nome_ref} | Motivo: {motivo}")
+                            for c in colunas:
+                                valores_multi.append(reg.get(c))
 
-                self.db_conn.commit()
+                        try:
+                            cursor.execute(sql_multi, valores_multi)
+                            atualizados_ou_criados += len(chunk)
+                        except Exception:
+                            # Fallback resiliente: se o bloco falhar, executa linha a linha para capturar a falha individual
+                            for reg in chunk:
+                                valores = [reg.get(c) for c in colunas]
+                                try:
+                                    cursor.execute(sql_single, valores)
+                                    atualizados_ou_criados += 1
+                                except Exception as err_item:
+                                    rid_ref = reg.get("nosso_numero") or reg.get("rid", "N/A")
+                                    nome_ref = reg.get("nome_completo", "")
+                                    motivo = str(err_item)
+                                    falhas.append(f"✗ [FALHA/INVALIDO] NossoNumero: {rid_ref} | Nome/Ref: {nome_ref} | Motivo: {motivo}")
 
-            total_falhas = len(falhas)
-            detalhes_falhas_str = "\n".join(falhas) if falhas else "Nenhuma falha individual registrada."
+                    self.db_conn.commit()
 
-            resumo = (
-                f"RESUMO DESTINO (AWS MYSQL): STATUS 200 | Total={total_lote} | "
-                f"Atualizados={atualizados_ou_criados} | Criados=0 | Falhas={total_falhas}\n\n"
-                f"DETALHES DE FALHAS ({total_falhas}):\n"
-                f"{detalhes_falhas_str}"
-            )
-            return True, resumo
+                total_falhas = len(falhas)
+                detalhes_falhas_str = "\n".join(falhas) if falhas else "Nenhuma falha individual registrada."
 
-        except Exception as e:
-            if self.db_conn:
-                try:
-                    self.db_conn.rollback()
-                except Exception:
-                    pass
-            return False, f"ERRO CRITICO no envio do lote ao MySQL AWS: {str(e)}"
+                resumo = (
+                    f"RESUMO DESTINO (AWS MYSQL): STATUS 200 | Total={total_lote} | "
+                    f"Atualizados={atualizados_ou_criados} | Criados=0 | Falhas={total_falhas}\n\n"
+                    f"DETALHES DE FALHAS ({total_falhas}):\n"
+                    f"{detalhes_falhas_str}"
+                )
+                return True, resumo
+
+            except Exception as e:
+                err_msg = str(e)
+                if self.db_conn:
+                    try:
+                        self.db_conn.rollback()
+                    except Exception:
+                        pass
+
+                # Detecta se é erro transitório de rede/socket para disparar auto-reconexão
+                is_net_err = any(t in err_msg.lower() for t in [
+                    "lost connection", "can't connect", "gone away", "broken pipe",
+                    "connection reset", "operationalerror", "interfaceerror", "timeout", "socket"
+                ])
+
+                if is_net_err and tentativa_lote < max_tentativas_lote:
+                    self.log(f"[AUTO-RECONEXAO] Instabilidade de rede detectada ({err_msg}). Tentativa {tentativa_lote}/{max_tentativas_lote}. Reconectando túnel e banco...")
+                    if self.reconectar():
+                        self.log("[AUTO-RECONEXAO] Reconectado com sucesso! Retomando envio do lote...")
+                        continue
+
+                return False, f"ERRO CRITICO no envio do lote ao MySQL AWS: {err_msg}"
+
+    def reconectar(self, max_tentativas=3, espera_segundos=3):
+        """Tenta restabelecer com segurança o túnel SSH e a conexão com o MySQL."""
+        import time
+        self.fechar_conexoes()
+        for tent in range(1, max_tentativas + 1):
+            time.sleep(espera_segundos)
+            self.log(f"[RECONECTAR] Tentativa {tent}/{max_tentativas} de reconectar à AWS...")
+            ok, msg = self.autenticar()
+            if ok:
+                return True
+            else:
+                self.log(f"[RECONECTAR FALHA] Tentativa {tent} falhou: {msg}")
+        return False
 
     def fechar_conexoes(self):
         """Encerra com segurança a conexão MySQL e o túnel SSH."""

@@ -53,7 +53,7 @@ class AWSMysqlTarget:
         if not os.path.exists(self.config_path):
             return
             
-        config = configparser.ConfigParser()
+        config = configparser.RawConfigParser()
         try:
             config.read(self.config_path, encoding='utf-8')
             if 'AMBIENTE' in config:
@@ -84,17 +84,18 @@ class AWSMysqlTarget:
                         self.mysql_database = parsed['database']
                 
                 # Se campos individuais forem informados, eles sobrescrevem ou preenchem
-                if not getattr(self, 'mysql_host', ''):
-                    self.mysql_host = m.get('mysql_host', fallback='').strip()
-                if not getattr(self, 'mysql_port', None):
-                    self.mysql_port = m.getint('mysql_port', fallback=3306)
-                if not getattr(self, 'mysql_user', ''):
-                    self.mysql_user = m.get('mysql_user', fallback='').strip()
-                if not getattr(self, 'mysql_password', ''):
-                    self.mysql_password = m.get('mysql_password', fallback='').strip()
-                if not getattr(self, 'mysql_database', ''):
-                    self.mysql_database = m.get('mysql_database', fallback='msf_cobranca').strip()
-                self.mysql_target_table = m.get('mysql_target_table', fallback='boletos').strip()
+                if m.get('mysql_host', fallback='').strip():
+                    self.mysql_host = m.get('mysql_host').strip()
+                if m.get('mysql_port', fallback='').strip():
+                    self.mysql_port = m.getint('mysql_port')
+                if m.get('mysql_user', fallback='').strip():
+                    self.mysql_user = m.get('mysql_user').strip()
+                if m.get('mysql_password', fallback='').strip():
+                    self.mysql_password = m.get('mysql_password').strip()
+                if m.get('mysql_database', fallback='').strip():
+                    self.mysql_database = m.get('mysql_database').strip()
+                if m.get('mysql_target_table', fallback='').strip():
+                    self.mysql_target_table = m.get('mysql_target_table').strip()
         except Exception as e:
             self.log(f"[CONFIG WARNING] Falha ao ler parametros de destino no config.ini: {str(e)}")
 

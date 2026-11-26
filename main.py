@@ -30,7 +30,7 @@ def main():
     
     if os.path.exists(config_path):
         try:
-            config = configparser.ConfigParser()
+            config = configparser.RawConfigParser()
             config.read(config_path, encoding='utf-8')
             if 'PROCESSAMENTO' in config:
                 p = config['PROCESSAMENTO']

@@ -18,7 +18,7 @@ def get_db_config():
     """Lê as configurações de banco do config.ini."""
     base_dir = get_base_dir()
     config_path = os.path.join(base_dir, 'config.ini')
-    config = configparser.ConfigParser()
+    config = configparser.RawConfigParser()
     
     cfg = {
         "servidor_ip": "192.168.1.20",

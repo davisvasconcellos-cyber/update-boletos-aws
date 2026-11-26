@@ -58,7 +58,7 @@ class SyncController:
             return
 
         try:
-            config = configparser.ConfigParser()
+            config = configparser.RawConfigParser()
             config.read(self.config_path, encoding='utf-8')
             if 'PROCESSAMENTO' not in config:
                 config['PROCESSAMENTO'] = {}
@@ -73,7 +73,7 @@ class SyncController:
         """Exporta um arquivo CSV com todos os registros formatados para o MySQL."""
         try:
             import csv
-            config = configparser.ConfigParser()
+            config = configparser.RawConfigParser()
             gerar_csv = False
             dir_backup = "backups_csv"
             

@@ -15,8 +15,9 @@ A base alimenta diretamente a página web e a aplicação de segunda via de bole
 * **Derivação FEBRABAN do Código de Barras (44 dígitos):** O SQL Server/Vindi fornece a linha digitável (47 dígitos) e o código de barras no padrão de fonte de barras. A aplicação deriva matematicamente os 44 dígitos numéricos oficiais padrão FEBRABAN descartando os 3 DVs de bloco, atendendo à constraint `ck_barras`.
 * **Tratamento Estruturado de Dados de Clientes:** A procedure `CarregaFaturasBoletoWS` foi atualizada para trazer 25 colunas diretamente do cadastro de clientes (`VINDI.dbo.Customers`), tratando telefones JSON, máscaras LGPD e formatação de CEP com hífen (`00000-000`).
 * **Regra de Retenção e Expurgo (90 dias):** Totalmente alinhada com as colunas calculadas pelo MySQL (`tipo_pessoa` e `expira_em`) e com o evento diário de limpeza `ev_expurgo_boletos_segunda_via` (às 03:00 UTC).
-* **Backup Físico em CSV:** Exporta automaticamente um arquivo `.csv` formatado em `backups_csv/` a cada execução para auditoria contábil e conferência no Excel.
-* **Dashboard HTML Interativo:** Gera automaticamente após cada sincronização um relatório visual com métricas, abas de falhas e logs detalhados em `log_dashboard/dashboard.html`.
+* **Backup Físico em CSV:** Exporta automaticamente um arquivo `.csv` formatado em `backups_csv/boletos_upload_*.csv` a cada execução para auditoria contábil e conferência no Excel.
+* **Exportação Dedicada de Inconsistências para o DBA:** Quando faturas brutas do SQL Server/Vindi possuem dados corrompidos ou ausentes (ex.: boletos sem linha digitável ou código de barras gerados no gateway), o sistema gera automaticamente o arquivo `backups_csv/inconsistencias_dba_*.csv` contendo todas as 25 colunas originais do SQL Server e o motivo do erro para rápida tratativa com o DBA.
+* **Dashboard HTML Interativo com JSON Bruto e Tempo Total:** Gera automaticamente em `log_dashboard/dashboard.html` um relatório com métricas em tempo real, tempo de duração da operação, alertas e botões expansíveis que exibem o JSON bruto retornado pelo SQL Server para cada boleto rejeitado.
 * **Atalho para Navegação em Plugins/DBeaver (`abrir_tunel_ssh.bat`):** Script prático que abre o túnel em segundo plano na porta `3307`, permitindo inspecionar o banco de dados visualmente através de qualquer plugin ou client SQL.
 
 ---
@@ -101,8 +102,9 @@ update_boletos_aws/
 │   ├── id_ed25519                  # Chave privada com passphrase oficial da AWS
 │   └── id_ed25519_nopass           # Chave privada descriptografada para plugins/DBeaver
 ├── logs/                           # Arquivos de log por execução: exec_YYYY-MM-DD_HH-MM-SS.log
-├── backups_csv/                    # Cópias físicas dos dados formatados enviados para a AWS
-├── config.ini                      # Arquivo central de configurações e credenciais
+├── backups_csv/                    # Cópias físicas formatadas (boletos_upload_*.csv e inconsistencias_dba_*.csv)
+├── config.ini                      # Arquivo central de configurações e credenciais (ignorado no Git)
+├── config.example.ini              # Modelo documentado para novos deploys e ambientes
 ├── main.py                         # Ponto de entrada com argumentos CLI (check, testmode, normal)
 ├── main.exe                        # Executável compilado standalone (pronto para servidor sem Python)
 ├── Compilador.bat                  # Script de compilação PyInstaller com backup automático de versão

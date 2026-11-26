@@ -21,32 +21,63 @@ A base alimenta diretamente a página web e a aplicação de segunda via de bole
 
 ---
 
-## 2. Arquitetura da Solução
+## 2. Arquitetura e Fluxo da Aplicação
 
-```text
-┌────────────────────────┐
-│  SQL Server (BDVIRT)   │ 192.168.1.20
-│      Base: VINDI       │ Procedure: CarregaFaturasBoletoWS (25 colunas)
-└───────────┬────────────┘
-            │ pyodbc (fetchmany em blocos)
-            ▼
-┌────────────────────────┐
-│   update_boletos_aws   │ • Formatação e Sanitização LGPD (formatter.py)
-│   (Aplicação Python)   │ • Derivação FEBRABAN 44 dígitos
-│       main.exe         │ • Fatiamento em Lotes Multi-Row (500 regs/query)
-└───────────┬────────────┘
-            │ Túnel SSH com chave ed25519 (porta 22)
-            ▼
-┌────────────────────────┐
-│   AWS Bastion Host     │ 34.204.24.206 (us-east-1)
-└───────────┬────────────┘
-            │ Redirecionamento interno
-            ▼
-┌────────────────────────┐
-│  AWS MySQL (RDS)       │ 10.1.10.101:3306
-│   Base: msf_cobranca   │ Tabela: boletos_segunda_via (51 colunas)
-│                        │ View: vw_boletos_segunda_via_ativos
-└────────────────────────┘
+```mermaid
+flowchart TD
+    subgraph Origem ["1. Origem dos Dados (Rede Interna MSF)"]
+        SQL["SQL Server - BDVIRT (192.168.1.20) - Base VINDI / SALESFORCE"]
+        SP["Stored Procedure: CarregaFaturasBoletoWS (25 Colunas: Faturas + Clientes CU)"]
+        SQL --> SP
+    end
+
+    subgraph Processamento ["2. Aplicação: update_boletos_aws (main.exe)"]
+        Fetch["Leitura em Lotes Paginados: cursor.fetchmany(1000)"]
+        Formatter["Camada de Transformação (model/formatter.py)
+        - Derivação do Código de Barras FEBRABAN (44 dígitos)
+        - Derivação do Nosso Número (11 dígitos)
+        - Extração de Telefones do JSON da Vindi
+        - Mascaramento LGPD e Formatação de CEP (00000-000)
+        - Normalização de Status (pending para open)"]
+        CSV["Backup Físico em CSV (backups_csv/boletos_upload_*.csv)"]
+        Batch["Agrupador Multi-Row (Chunks de 500 registros por query)"]
+        Retry["Mecanismo de Resiliência
+        - Auto-Reconexão de Túnel/Banco (até 3 tentativas)
+        - Fallback Linha a Linha em caso de erro no lote"]
+
+        SP --> Fetch
+        Fetch --> Formatter
+        Formatter --> CSV
+        Formatter --> Batch
+        Batch --> Retry
+    end
+
+    subgraph AWS ["3. Nuvem AWS (us-east-1)"]
+        Bastion["AWS Bastion Host (34.204.24.206) - Túnel SSH (id_ed25519)"]
+        MySQL["MySQL RDS (10.1.10.101:3306) - Base: msf_cobranca"]
+        Table["Tabela: boletos_segunda_via
+        - 51 colunas relacionais
+        - ON DUPLICATE KEY UPDATE (Idempotência Total)
+        - Expiração em 90 dias (Coluna expira_em)"]
+        View["View: vw_boletos_segunda_via_ativos (Apenas boletos vigentes)"]
+        Event["Evento: ev_expurgo_boletos_segunda_via (Limpeza diária às 03:00 UTC)"]
+
+        Retry -->|Túnel SSH Porta 22| Bastion
+        Bastion -->|Redirecionamento Interno| MySQL
+        MySQL --> Table
+        Table --> View
+        Table -.-> Event
+    end
+
+    subgraph Consumo ["4. Consumo e Visualização"]
+        Dashboard["Dashboard HTML Interativo (log_dashboard/dashboard.html)"]
+        Portal["Portal do Doador / OCC (Segunda Via e Renegociação)"]
+        DBeaver["DBeaver / Plugins VS Code (Via abrir_tunel_ssh.bat na porta 3307)"]
+
+        Processamento -.-> Dashboard
+        View --> Portal
+        MySQL -.-> DBeaver
+    end
 ```
 
 ---

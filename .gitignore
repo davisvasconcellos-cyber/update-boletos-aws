@@ -28,3 +28,4 @@ backups_csv/
 *.csv
 *.xlsx
 *.xls
+scratch/

@@ -82,6 +82,82 @@ def extrair_nosso_numero_de_linha_digitavel(linha_digitavel):
             return nosso_num
     return ""
 
+def linha_digitavel_para_codigo_barras_44(linha_digitavel):
+    """
+    Converte a linha digitável (47 dígitos) no código de barras oficial FEBRABAN (44 dígitos).
+    Regra FEBRABAN:
+      Linha: 
+        c1 = posições 0..9 (9 úteis + DV pos 9)
+        c2 = posições 10..20 (10 úteis + DV pos 20)
+        c3 = posições 21..31 (10 úteis + DV pos 31)
+        c4 = posição 32 (DV geral)
+        c5 = posições 33..47 (14 dígitos: fator + valor)
+      Código de barras (44 posições):
+        banco_moeda (4) + DV geral (1) + fator_valor (14) + campo_livre (25)
+    """
+    if not linha_digitavel:
+        return ""
+    digitos = re.sub(r'\D', '', str(linha_digitavel).strip())
+    if len(digitos) != 47:
+        return ""
+    
+    c1 = digitos[0:9]    # 9 dígitos (sem o DV pos 9)
+    c2 = digitos[10:20]  # 10 dígitos (sem o DV pos 20)
+    c3 = digitos[21:31]  # 10 dígitos (sem o DV pos 31)
+    c4 = digitos[32:33]  # 1 dígito (DV geral)
+    c5 = digitos[33:47]  # 14 dígitos (fator + valor)
+    
+    banco_moeda = c1[0:4]
+    campo_livre_1 = c1[4:9]
+    campo_livre_2 = c2
+    campo_livre_3 = c3
+    
+    return banco_moeda + c4 + c5 + campo_livre_1 + campo_livre_2 + campo_livre_3
+
+def extrair_telefone_estruturado(val):
+    """
+    Extrai número do telefone e tipo ('mobile' ou 'landline').
+    Suporta formato JSON retornado por VINDI:
+    '[{"id":...,"phone_type":"mobile","number":"5521981285458","extension":null}]'
+    ou string simples.
+    """
+    if not val:
+        return "", "mobile", ""
+    s = str(val).strip()
+    if s.startswith('[') or s.startswith('{'):
+        try:
+            data = json.loads(s)
+            if isinstance(data, list) and len(data) > 0:
+                item = data[0]
+                num = extrair_digitos(item.get('number', ''))
+                tipo = item.get('phone_type', 'mobile')
+                ext = str(item.get('extension') or '')
+                return num, ('landline' if tipo == 'landline' else 'mobile'), ext
+            elif isinstance(data, dict):
+                num = extrair_digitos(data.get('number', ''))
+                tipo = data.get('phone_type', 'mobile')
+                ext = str(data.get('extension') or '')
+                return num, ('landline' if tipo == 'landline' else 'mobile'), ext
+        except Exception:
+            pass
+            
+    m = re.search(r'"number"\s*:\s*"(\d+)"', s)
+    if m:
+        t_m = re.search(r'"phone_type"\s*:\s*"(\w+)"', s)
+        tipo = t_m.group(1) if t_m else 'mobile'
+        return m.group(1), ('landline' if tipo == 'landline' else 'mobile'), ""
+        
+    num = extrair_digitos(s)
+    return num, 'mobile', ""
+
+def formatar_cep_com_traco(cep_raw):
+    """Garante formato 00000-000 (9 caracteres) exigido pela tabela."""
+    digitos = extrair_digitos(cep_raw)
+    if not digitos:
+        return "00000-000"
+    digitos = digitos.zfill(8)[-8:]
+    return f"{digitos[:5]}-{digitos[5:]}"
+
 def normalizar_status(status_raw):
     """
     Regra DERIVAR:
@@ -321,13 +397,18 @@ def formatar_registro(row_dict):
                         return val
         return default
 
-    # Campos complementares presentes no FingerPrint / CNAB ou na SP do DBA
+    # Campos da resposta da SP/gateway
     linha_digitavel = get_val("last_transaction.gateway_response_fields.typeable_barcode", "Linha digitável", "Linha digitavel", "linha_digitavel", "digitableLine")
     codigo_barras = get_val("last_transaction.gateway_response_fields.barcode", "Cód. de Barras", "Cod. de Barras", "codigo_barras", "barcode")
-    telefone = get_val("Número Telefone", "Numero Telefone", "telefone", "phone")
     situacao_doador = get_val("Situação", "Situacao", "situacao_doador")
 
-    # 1. Chave de Consulta (rid)
+    # 1. Chave de Consulta (rid / nosso_numero)
+    linha_limpa_47 = extrair_digitos(linha_digitavel)
+    if len(linha_limpa_47) == 47:
+        codigo_barras_44 = linha_digitavel_para_codigo_barras_44(linha_limpa_47)
+    else:
+        codigo_barras_44 = extrair_digitos(codigo_barras)
+
     nosso_numero_raw = get_val("Nosso Número", "NossoNumero", "ourNumber", "nosso_numero")
     rid = extrair_nosso_numero_11_digitos(nosso_numero_raw)
     
@@ -343,83 +424,128 @@ def formatar_registro(row_dict):
         elif num_doc_fallback:
             rid = num_doc_fallback.zfill(11)
             
-    if not rid:
-        return False, f"Nosso Numero invalido ou ausente para identificar o boleto: '{nosso_numero_raw}'", {}
+    if not rid or len(rid) != 11:
+        return False, f"Nosso Numero invalido ou ausente para identificar o boleto: '{nosso_numero_raw}' (rid: '{rid}')", {}
+
+    # Validação do código de barras e linha digitável
+    if len(linha_limpa_47) != 47:
+        return False, f"Linha digitavel deve ter 47 digitos numericos: '{linha_digitavel}'", {}
+    if len(codigo_barras_44) != 44:
+        return False, f"Codigo de barras deve ter 44 digitos numericos: '{codigo_barras_44}'", {}
 
     # 2. Situação / Status
     status_raw = get_val("Status", "status", "situacao", default="pending")
     status = normalizar_status(status_raw)
 
-    # 3. Identificadores Vindi
+    # 3. Identificadores Vindi / Salesforce
     url_pdf = get_val("PDF de cobrança", "PDF de cobranca", "url_pdf", "pdf_url")
     charge_id = get_val("IdCharge", "id_charge", "vindi_charge_id", "chargeId", "id_cobranca")
     if not charge_id and url_pdf:
         charge_id = extrair_charge_id(url_pdf)
 
     bill_id = get_val("IdFatura", "id_fatura", "ID de Fatura Vindi", "ID Fatura Vindi", "billId")
+    if not bill_id:
+        return False, "ID de Fatura Vindi (bill_id) ausente", {}
+
     subscription_id = get_val("Id de Assinatura", "subscriptionId", "id_assinatura_vindi", "id_assinatura")
     customer_id = get_val("CustomerId", "customer_id", "Id do Cliente Vindi", "customerId")
+    code_oportunidade = get_val("Id", "Gateway_Opportunity_ID", "code_oportunidade", "opportunity_id")
+
+    if not url_pdf and charge_id:
+        url_pdf = f"https://app.vindi.com.br/customer/charges/{charge_id}"
 
     # 4. Dados do Doador
     nome_completo = get_val("name", "Nome Completo", "Nome", "fullName", "donor_name")
-    primeiro_nome_raw = get_val("Primeiro e último nome", "Primeiro Nome", "firstName")
-    if primeiro_nome_raw:
-        first_name = primeiro_nome_raw.split()[0].strip()
-    elif nome_completo:
-        first_name = nome_completo.split()[0].strip()
-    else:
-        first_name = "Doador"
+    if not nome_completo:
+        nome_completo = "Doador MSF"
 
-    doc_raw = get_val("CPF/CNPJ", "CPF", "CNPJ", "document", "msf_document_number")
+    # Nome curto (primeiro e último nome)
+    partes_nome = nome_completo.split()
+    if len(partes_nome) >= 2:
+        nome_curto = f"{partes_nome[0]} {partes_nome[-1]}"[:60]
+    else:
+        nome_curto = nome_completo[:60]
+
+    first_name = partes_nome[0] if partes_nome else "Doador"
+
+    doc_raw = get_val("CPF/CNPJ", "CPF", "CNPJ", "document", "msf_document_number", "registry_code")
     doc_limpo = extrair_digitos(doc_raw)
+    if len(doc_limpo) not in (11, 14):
+        return False, f"CPF/CNPJ invalido ({len(doc_limpo)} digitos): '{doc_raw}'", {}
+
     masked_doc = mascarar_documento(doc_limpo)
     person_type = "PJ" if len(doc_limpo) == 14 else "PF"
 
     email_raw = get_val("Email", "E-mail", "email")
     masked_email = mascarar_email(email_raw)
 
-    endereco_rua = get_val("Endereço", "Endereco", "street", "address1")
-    endereco_num = get_val("Número", "Numero", "number")
-    endereco_comp = get_val("Complemento", "complement")
-    endereco_bairro = get_val("Bairro", "district")
-    endereco_cep = get_val("CEP", "postalCode")
-    endereco_cidade = get_val("Cidade", "city")
-    endereco_estado = get_val("Estado", "state", "UF")
+    tel_raw = get_val("Telefone", "Número Telefone", "Numero Telefone", "telefone", "phone", "phones")
+    tel_num, tel_tipo, tel_ramal = extrair_telefone_estruturado(tel_raw)
+    telefone = tel_num
+
+    endereco_rua = get_val("Endereço", "Endereco", "street", "address1", "address.street", default="Nao informado")[:80]
+    endereco_num = get_val("Número", "Numero", "number", "address.number", default="S/N")[:10]
+    endereco_comp = get_val("Complemento", "complement", "address.additional_details", default="")[:40]
+    endereco_bairro = get_val("Bairro", "district", "address.neighborhood", default="Centro")[:60]
+    endereco_cep_raw = get_val("CEP", "postalCode", "address.zipcode", default="00000000")
+    endereco_cep = formatar_cep_com_traco(endereco_cep_raw)
+    endereco_cidade = get_val("Cidade", "city", "address.city", default="Rio de Janeiro")[:60]
+    endereco_estado = get_val("Estado", "state", "UF", "address.state", default="RJ")[:2].upper()
 
     # Se a cidade vier combinada (ex: 'Rio de Janeiro, RJ' ou 'Rio de Janeiro/RJ')
-    if (not endereco_estado) and (',' in endereco_cidade or '/' in endereco_cidade):
+    if (not endereco_estado or len(endereco_estado) != 2) and (',' in endereco_cidade or '/' in endereco_cidade):
         sep = ',' if ',' in endereco_cidade else '/'
         c_partes = endereco_cidade.split(sep, 1)
-        endereco_cidade = c_partes[0].strip()
-        endereco_estado = c_partes[1].strip()
+        endereco_cidade = c_partes[0].strip()[:60]
+        endereco_estado = c_partes[1].strip()[:2].upper()
 
-    # 5. Plano (Assinatura)
-    payment_method = get_val("Método de Pagamento", "MetodoPagamento", "paymentMethod", default="online_bank_slip_bradesco_recorrente")
-    
-    # 6. Boleto Bradesco
-    agencia_conta_raw = get_val("Agência/Conta de Cobrança", "AgenciaConta", "agencia_conta")
-    agencia, conta, digito_conta = separar_agencia_conta(agencia_conta_raw)
+    if not endereco_estado:
+        endereco_estado = "RJ"
 
-    carteira = get_val("Carteira", "wallet", default="09").zfill(2)
-    doc_number = get_val("Nº do documento", "NumeroDocumento", "documentNumber", "document_number")
-    if not doc_number:
-        doc_number = str(int(rid)) if rid.isdigit() else rid
-
+    # 5. Valores e Datas
     valor_raw = get_val("amount", "Valor", "last_transaction.amount", "valor_boleto")
     valor_float = parse_valor_monetario(valor_raw)
+    if valor_float <= 0:
+        return False, f"Valor invalido para boleto: {valor_float}", {}
 
     due_date = parse_data_iso(get_val("due_at", "Data de Vencimento", "DataVencimento", "dueDate"))
+    if not due_date:
+        return False, "Data de vencimento ausente", {}
+
     issue_date = parse_data_iso(get_val("CreatedDate", "Data de Emissão", "DataEmissao", "issueDate"))
     if not issue_date:
         issue_date = datetime.date.today().strftime('%Y-%m-%d')
 
+    # Garantir regra ck_vencimento (data_vencimento >= data_emissao)
+    if issue_date > due_date:
+        issue_date = due_date
+
     suggested_due_date = parse_data_iso(get_val("Vencimento sugerido", "data_vencimento_sugerida", "suggestedDueDate"))
+    if suggested_due_date:
+        if suggested_due_date < issue_date or suggested_due_date > due_date:
+            suggested_due_date = due_date
+
+    # 6. Parâmetros Bancários
+    payment_method = get_val("Método de Pagamento", "MetodoPagamento", "paymentMethod", default="online_bank_slip_bradesco_recorrente")[:50]
+    agencia_conta_raw = get_val("Agência/Conta de Cobrança", "AgenciaConta", "agencia_conta")
+    agencia, conta, digito_conta = separar_agencia_conta(agencia_conta_raw)
+
+    carteira = get_val("Carteira", "wallet", default="09").zfill(2)[:2]
+    doc_number = get_val("Nº do documento", "NumeroDocumento", "documentNumber", "document_number")
+    if not doc_number:
+        doc_number = str(int(rid)) if rid.isdigit() else rid
+    doc_number = str(doc_number)[:20]
 
     beneficiario_raw = get_val("Beneficiário", "Beneficiario", "beneficiary")
     ben_name, ben_address, ben_doc = separar_beneficiario(beneficiario_raw)
+    ben_full_text = f"{ben_name}, {ben_address}. CNPJ {ben_doc}"[:150]
 
-    local_pagamento = get_val("Local de Pagamento", "LocalPagamento", "paymentPlace", default="EM QUALQUER BANCO OU CORRESPONDENTE NÃO BANCÁRIO.")
+    local_pagamento = get_val("Local de Pagamento", "LocalPagamento", "paymentPlace", default="EM QUALQUER BANCO OU CORRESPONDENTE NÃO BANCÁRIO.")[:120]
     codigo_banco = "237"
+    banco_nome = "Bradesco"
+
+    # Lote padrão
+    lote = get_val("lote", default=f"SP_CarregaFaturasBoletoWS_{datetime.date.today().strftime('%Y%m%d')}")[:80]
 
     # Monta a estrutura JSON conforme contrato da página (especificado no PDF)
     payload_json = {
@@ -476,44 +602,71 @@ def formatar_registro(row_dict):
         }
     }
 
-    # Registro final (contendo tanto colunas relacionais normalizadas quanto o payload_json estruturado)
+    # Registro final (compatível com a tabela oficial 'boletos_segunda_via' e tabela genérica 'boletos')
+    id_fat_int = int(bill_id) if str(bill_id).isdigit() else None
+    id_cob_int = int(charge_id) if str(charge_id).isdigit() else None
+    id_ass_int = int(subscription_id) if str(subscription_id).isdigit() else None
+
     registro_formatado = {
-        "rid": rid,
-        "nosso_numero": rid,
+        # Campos oficiais da tabela boletos_segunda_via
+        "lote": lote,
         "numero_documento": doc_number,
+        "nosso_numero": rid,
+        "carteira": carteira,
+        "id_fatura_vindi": id_fat_int,
+        "id_cobranca_vindi": id_cob_int,
+        "id_assinatura_vindi": id_ass_int,
+        "code_oportunidade": code_oportunidade or None,
+        "metodo_pagamento": payment_method,
+        "status_vindi": status_raw,
         "status": status,
-        "valor": valor_float,
-        "data_emissao": issue_date,
-        "data_vencimento": due_date,
-        "data_vencimento_sugerida": suggested_due_date,
-        "id_cobranca_vindi": charge_id,
-        "id_fatura_vindi": bill_id,
-        "id_assinatura_vindi": subscription_id,
-        "id_cliente_vindi": customer_id,
-        "cpf_cnpj": doc_limpo,
-        "cpf_cnpj_mascarado": masked_doc,
-        "tipo_pessoa": person_type,
+        "situacao_doador": situacao_doador if situacao_doador in ('Adimplente', 'Inadimplente') else None,
+        "pago_em": None,
+        "nome_curto": nome_curto,
         "nome_completo": nome_completo,
-        "primeiro_nome": first_name,
-        "email_mascarado": masked_email,
-        "telefone": telefone,
-        "situacao_doador": situacao_doador,
-        "endereco": endereco_rua,
-        "numero": endereco_num,
-        "complemento": endereco_comp,
+        "email": email_raw or None,
+        "cpf_cnpj": doc_limpo,
+        "receber_carta": get_val("Receber Carta", "receber_carta", default=None),
+        "logradouro": endereco_rua,
+        "numero_endereco": endereco_num,
+        "complemento": endereco_comp or None,
+        "cep": endereco_cep,
         "bairro": endereco_bairro,
         "cidade": endereco_cidade,
         "uf": endereco_estado,
-        "cep": endereco_cep,
-        "metodo_pagamento": payment_method,
+        "pais": "BR",
+        "telefone_tipo": tel_tipo,
+        "telefone_numero": tel_num or None,
+        "telefone_ramal": tel_ramal or None,
+        "banco_codigo": codigo_banco,
+        "banco_nome": banco_nome,
         "agencia": agencia,
         "conta": conta,
-        "digito_conta": digito_conta,
-        "carteira": carteira,
-        "codigo_banco": codigo_banco,
+        "conta_digito": digito_conta,
+        "beneficiario": ben_full_text,
         "local_pagamento": local_pagamento,
-        "linha_digitavel": linha_digitavel,
-        "codigo_barras": codigo_barras,
+        "especie_doc": "Outros",
+        "aceite": "N",
+        "data_emissao": issue_date,
+        "data_vencimento": due_date,
+        "data_vencimento_sugerida": suggested_due_date,
+        "vencimento_frente_carta": get_val("vencimento_frente_carta", default=None),
+        "valor": valor_float,
+        "linha_digitavel": linha_limpa_47,
+        "codigo_barras": codigo_barras_44,
+        "pdf_url": url_pdf or None,
+
+        # Campos adicionais / compatibilidade com schema legado 'boletos'
+        "rid": rid,
+        "id_cliente_vindi": customer_id,
+        "cpf_cnpj_mascarado": masked_doc,
+        "tipo_pessoa": person_type,
+        "primeiro_nome": first_name,
+        "email_mascarado": masked_email,
+        "telefone": tel_num,
+        "endereco": endereco_rua,
+        "numero": endereco_num,
+        "digito_conta": digito_conta,
         "beneficiario_nome": ben_name,
         "beneficiario_endereco": ben_address,
         "beneficiario_documento": ben_doc,

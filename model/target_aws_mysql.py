@@ -186,9 +186,21 @@ class AWSMysqlTarget:
 
     def garantir_schema_tabela(self):
         """
-        Garante que a tabela de destino (padrão 'boletos') exista no banco MySQL,
-        com todas as 38 colunas relacionais, payload_json, chaves e índices.
+        Garante que a tabela de destino exista no banco MySQL.
+        Para 'boletos_segunda_via' (oficial), apenas valida a existência e estrutura.
+        Para 'boletos' (legado / container local), cria automaticamente se não existir.
         """
+        if self.mysql_target_table == "boletos_segunda_via":
+            try:
+                with self.db_conn.cursor() as cursor:
+                    cursor.execute("SELECT 1 FROM `boletos_segunda_via` LIMIT 1")
+                    cursor.fetchone()
+                self.log(f"[DB SCHEMA] Tabela oficial `{self.mysql_target_table}` verificada com sucesso no banco `{self.mysql_database}`.")
+                return
+            except Exception as e:
+                self.log(f"[DB SCHEMA AVISO] Tabela `{self.mysql_target_table}` nao encontrada ou inacessivel: {e}")
+                return
+
         ddl = f"""
         CREATE TABLE IF NOT EXISTS `{self.mysql_target_table}` (
             `rid` VARCHAR(30) NOT NULL,
@@ -283,20 +295,41 @@ class AWSMysqlTarget:
 
         # ---------------- MODO REAL (AWS MYSQL) ----------------
         try:
-            colunas = [
-                "rid", "nosso_numero", "numero_documento", "status", "valor",
-                "data_emissao", "data_vencimento", "data_vencimento_sugerida",
-                "id_cobranca_vindi", "id_fatura_vindi", "id_assinatura_vindi", "id_cliente_vindi",
-                "cpf_cnpj", "cpf_cnpj_mascarado", "tipo_pessoa", "nome_completo", "primeiro_nome",
-                "email_mascarado", "telefone", "situacao_doador", "endereco", "numero", "complemento", "bairro", "cidade", "uf", "cep",
-                "metodo_pagamento", "agencia", "conta", "digito_conta", "carteira", "codigo_banco",
-                "local_pagamento", "linha_digitavel", "codigo_barras", "beneficiario_nome", "beneficiario_endereco", "beneficiario_documento",
-                "payload_json"
-            ]
-
-            cols_str = ", ".join([f"`{c}`" for c in colunas])
-            placeholders = ", ".join(["%s"] * len(colunas))
-            update_clause = ", ".join([f"`{c}` = VALUES(`{c}`)" for c in colunas if c != "rid"])
+            if self.mysql_target_table == "boletos_segunda_via":
+                # Tabela oficial de produção/homologação
+                # ATENÇÃO: As colunas `id` (auto_increment), `tipo_pessoa` (STORED GENERATED),
+                # `expira_em` (STORED GENERATED), `criado_em` e `atualizado_em` NÃO DEVEM ser inseridas!
+                colunas = [
+                    "lote", "numero_documento", "nosso_numero", "carteira",
+                    "id_fatura_vindi", "id_cobranca_vindi", "id_assinatura_vindi", "code_oportunidade",
+                    "metodo_pagamento", "status_vindi", "status", "situacao_doador", "pago_em",
+                    "nome_curto", "nome_completo", "email", "cpf_cnpj", "receber_carta",
+                    "logradouro", "numero_endereco", "complemento", "cep", "bairro", "cidade", "uf", "pais",
+                    "telefone_tipo", "telefone_numero", "telefone_ramal",
+                    "banco_codigo", "banco_nome", "agencia", "conta", "conta_digito",
+                    "beneficiario", "local_pagamento", "especie_doc", "aceite",
+                    "data_emissao", "data_vencimento", "data_vencimento_sugerida", "vencimento_frente_carta",
+                    "valor", "linha_digitavel", "codigo_barras", "pdf_url"
+                ]
+                cols_str = ", ".join([f"`{c}`" for c in colunas])
+                placeholders = ", ".join(["%s"] * len(colunas))
+                update_cols = [c for c in colunas if c not in ("id_fatura_vindi", "nosso_numero", "carteira")]
+                update_clause = ", ".join([f"`{c}` = VALUES(`{c}`)" for c in update_cols])
+            else:
+                # Tabela legado 'boletos'
+                colunas = [
+                    "rid", "nosso_numero", "numero_documento", "status", "valor",
+                    "data_emissao", "data_vencimento", "data_vencimento_sugerida",
+                    "id_cobranca_vindi", "id_fatura_vindi", "id_assinatura_vindi", "id_cliente_vindi",
+                    "cpf_cnpj", "cpf_cnpj_mascarado", "tipo_pessoa", "nome_completo", "primeiro_nome",
+                    "email_mascarado", "telefone", "situacao_doador", "endereco", "numero", "complemento", "bairro", "cidade", "uf", "cep",
+                    "metodo_pagamento", "agencia", "conta", "digito_conta", "carteira", "codigo_banco",
+                    "local_pagamento", "linha_digitavel", "codigo_barras", "beneficiario_nome", "beneficiario_endereco", "beneficiario_documento",
+                    "payload_json"
+                ]
+                cols_str = ", ".join([f"`{c}`" for c in colunas])
+                placeholders = ", ".join(["%s"] * len(colunas))
+                update_clause = ", ".join([f"`{c}` = VALUES(`{c}`)" for c in colunas if c != "rid"])
 
             sql_upsert = f"""
                 INSERT INTO `{self.mysql_target_table}` ({cols_str})
@@ -314,10 +347,10 @@ class AWSMysqlTarget:
                         cursor.execute(sql_upsert, valores)
                         atualizados_ou_criados += 1
                     except Exception as err_item:
-                        rid_ref = reg.get("rid", "N/A")
+                        rid_ref = reg.get("nosso_numero") or reg.get("rid", "N/A")
                         nome_ref = reg.get("nome_completo", "")
                         motivo = str(err_item)
-                        falhas.append(f"✗ [FALHA/INVALIDO] ID: {rid_ref} | Nome/Ref: {nome_ref} | Motivo: {motivo}")
+                        falhas.append(f"✗ [FALHA/INVALIDO] NossoNumero: {rid_ref} | Nome/Ref: {nome_ref} | Motivo: {motivo}")
 
                 self.db_conn.commit()
 

@@ -331,26 +331,50 @@ class AWSMysqlTarget:
                 placeholders = ", ".join(["%s"] * len(colunas))
                 update_clause = ", ".join([f"`{c}` = VALUES(`{c}`)" for c in colunas if c != "rid"])
 
-            sql_upsert = f"""
+            single_row_placeholder = "(" + ", ".join(["%s"] * len(colunas)) + ")"
+            sql_single = f"""
                 INSERT INTO `{self.mysql_target_table}` ({cols_str})
-                VALUES ({placeholders})
+                VALUES {single_row_placeholder}
                 ON DUPLICATE KEY UPDATE {update_clause}
             """
 
             atualizados_ou_criados = 0
             falhas = []
 
+            # Inserção em blocos multi-row (chunks de até 500 registros por query).
+            # Elimina o overhead de latência do túnel SSH (150ms por round-trip aos EUA),
+            # reduzindo o tempo de 60.000 registros de ~2h30 para apenas ~1 a 2 minutos!
+            chunk_size = 500
+
             with self.db_conn.cursor() as cursor:
-                for reg in lote_registros:
-                    valores = [reg.get(c) for c in colunas]
+                for i in range(0, total_lote, chunk_size):
+                    chunk = lote_registros[i:i + chunk_size]
+                    multi_placeholders = ", ".join([single_row_placeholder] * len(chunk))
+                    sql_multi = f"""
+                        INSERT INTO `{self.mysql_target_table}` ({cols_str})
+                        VALUES {multi_placeholders}
+                        ON DUPLICATE KEY UPDATE {update_clause}
+                    """
+                    valores_multi = []
+                    for reg in chunk:
+                        for c in colunas:
+                            valores_multi.append(reg.get(c))
+
                     try:
-                        cursor.execute(sql_upsert, valores)
-                        atualizados_ou_criados += 1
-                    except Exception as err_item:
-                        rid_ref = reg.get("nosso_numero") or reg.get("rid", "N/A")
-                        nome_ref = reg.get("nome_completo", "")
-                        motivo = str(err_item)
-                        falhas.append(f"✗ [FALHA/INVALIDO] NossoNumero: {rid_ref} | Nome/Ref: {nome_ref} | Motivo: {motivo}")
+                        cursor.execute(sql_multi, valores_multi)
+                        atualizados_ou_criados += len(chunk)
+                    except Exception:
+                        # Fallback resiliente: se o bloco falhar, executa linha a linha para capturar a falha individual
+                        for reg in chunk:
+                            valores = [reg.get(c) for c in colunas]
+                            try:
+                                cursor.execute(sql_single, valores)
+                                atualizados_ou_criados += 1
+                            except Exception as err_item:
+                                rid_ref = reg.get("nosso_numero") or reg.get("rid", "N/A")
+                                nome_ref = reg.get("nome_completo", "")
+                                motivo = str(err_item)
+                                falhas.append(f"✗ [FALHA/INVALIDO] NossoNumero: {rid_ref} | Nome/Ref: {nome_ref} | Motivo: {motivo}")
 
                 self.db_conn.commit()
 

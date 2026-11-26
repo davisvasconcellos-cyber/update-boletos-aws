@@ -32,3 +32,7 @@ backups_csv/
 *.xlsx
 *.xls
 scratch/
+
+# Pacotes de deploy gerados localmente
+pacote_deploy_servidor/
+*.zip

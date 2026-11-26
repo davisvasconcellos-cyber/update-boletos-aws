@@ -1,244 +1,266 @@
 # update_boletos_aws — Sincronização de Boletos (SQL Server ➔ AWS MySQL via SSH)
 
-Aplicação modular de alta performance para extração, transformação e sincronização de dados de cobrança por **Boletos Bancários** do **SQL Server local** para um banco de dados **MySQL hospedado na AWS**, utilizando **Túnel SSH autenticado por certificado (`.pem`)** e **Modo Mockup** para validação operacional de dados.
+Aplicação modular de alta performance e resiliência desenvolvida pela equipe de tecnologia de **Médicos Sem Fronteiras (MSF)** para extração, tratamento, enriquecimento e sincronização de dados de cobrança por **Boletos Bancários** do **SQL Server local** para o banco de dados **MySQL hospedado na AWS (RDS)**, utilizando **Túnel SSH autenticado por certificado (`id_ed25519`)** através do servidor Bastion.
 
-Desenvolvida pela equipe de tecnologia de **Médicos Sem Fronteiras (MSF)**, seguindo a arquitetura operacional consolidada do `update_occ_contacts`.
-
----
-
-## 1. Visão Geral e Modelo de Negócio
-
-Esta aplicação automatiza a disponibilização dos dados de faturas de boletos para a página e API de segunda via e renegociação de doações de MSF.
-
-- **Origem dos Dados:** Stored Procedure `CarregaFaturasBoletoWS` no SQL Server (banco de dados `VINDI` no host `192.168.1.20`).
-- **Camada de Transformação:** Regras de negócio e sanitização de dados baseadas no modelo **FingerPrint (CNAB)** e na especificação de 32 campos da Vindi/Bradesco.
-- **Destino dos Dados:** Banco MySQL na AWS (tabela `boletos`), acessado de forma segura através de um túnel SSH com autenticação por chave privada (`.pem` / `id_ed25519`).
-- **Padrão de Resiliência:** 
-  - **Modo Mockup (`ambiente = mockup`)**: permite rodar a extração real no SQL Server, aplicar todas as regras de derivação, gerar CSVs de auditoria e relatórios visuais no Dashboard sem depender da liberação prévia de portas de rede na AWS.
-  - **Backup Físico em CSV (`gerar_csv_backup = true`)**: exporta automaticamente uma cópia física em `backups_csv/` de todos os registros enriquecidos enviados em cada execução.
-  - **Corte Incremental (`last_sync_timestamp`)**: garante idempotência e rastreabilidade entre as execuções diárias.
+A base alimenta diretamente a página web e a aplicação de segunda via de boletos e renegociação de doações de MSF (desenvolvida com a equipe do OCC / Codebit).
 
 ---
 
-## 2. Estrutura de Diretórios
+## 1. Destaques e Funcionalidades Principais
+
+* **Alta Performance Multi-Row (60.000 registros em ~2 minutos):** Em vez de enviar registro a registro (o que levaria mais de 2 horas devido aos 132ms de latência de rede entre Brasil e AWS US-East-1), a aplicação agrupa as inserções em **blocos multi-row de 500 registros por query**, reduzindo 60.000 requisições de rede para apenas 120.
+* **Auto-Reconexão com Retries (Self-Healing):** Se o túnel SSH ou a conexão MySQL oscilarem durante uma sincronização pesada, a aplicação detecta o erro de socket, executa rollback com segurança, reabre o túnel SSH e a sessão MySQL automaticamente e retenta o lote atual até 3 vezes antes de prosseguir.
+* **Isolamento de Falhas por Registro (Fallback Resiliente):** Se algum bloco de 500 registros contiver 1 boleto com dados inconsistentes, o bloco é automaticamente desmembrado e enviado linha a linha. O registro falho é isolado nos logs/dashboard e os outros 499 registros válidos são gravados com sucesso.
+* **Garantia Total de Idempotência:** Suportada pelas chaves exclusivas `uk_fatura_vindi` e `uk_nosso_numero` e pela cláusula `ON DUPLICATE KEY UPDATE`. O processo pode rodar 1, 2 ou 10 vezes consecutivas sem criar registros duplicados; faturas existentes são apenas atualizadas.
+* **Derivação FEBRABAN do Código de Barras (44 dígitos):** O SQL Server/Vindi fornece a linha digitável (47 dígitos) e o código de barras no padrão de fonte de barras. A aplicação deriva matematicamente os 44 dígitos numéricos oficiais padrão FEBRABAN descartando os 3 DVs de bloco, atendendo à constraint `ck_barras`.
+* **Tratamento Estruturado de Dados de Clientes:** A procedure `CarregaFaturasBoletoWS` foi atualizada para trazer 25 colunas diretamente do cadastro de clientes (`VINDI.dbo.Customers`), tratando telefones JSON, máscaras LGPD e formatação de CEP com hífen (`00000-000`).
+* **Regra de Retenção e Expurgo (90 dias):** Totalmente alinhada com as colunas calculadas pelo MySQL (`tipo_pessoa` e `expira_em`) e com o evento diário de limpeza `ev_expurgo_boletos_segunda_via` (às 03:00 UTC).
+* **Backup Físico em CSV:** Exporta automaticamente um arquivo `.csv` formatado em `backups_csv/` a cada execução para auditoria contábil e conferência no Excel.
+* **Dashboard HTML Interativo:** Gera automaticamente após cada sincronização um relatório visual com métricas, abas de falhas e logs detalhados em `log_dashboard/dashboard.html`.
+* **Atalho para Navegação em Plugins/DBeaver (`abrir_tunel_ssh.bat`):** Script prático que abre o túnel em segundo plano na porta `3307`, permitindo inspecionar o banco de dados visualmente através de qualquer plugin ou client SQL.
+
+---
+
+## 2. Arquitetura da Solução
+
+```text
+┌────────────────────────┐
+│  SQL Server (BDVIRT)   │ 192.168.1.20
+│      Base: VINDI       │ Procedure: CarregaFaturasBoletoWS (25 colunas)
+└───────────┬────────────┘
+            │ pyodbc (fetchmany em blocos)
+            ▼
+┌────────────────────────┐
+│   update_boletos_aws   │ • Formatação e Sanitização LGPD (formatter.py)
+│   (Aplicação Python)   │ • Derivação FEBRABAN 44 dígitos
+│       main.exe         │ • Fatiamento em Lotes Multi-Row (500 regs/query)
+└───────────┬────────────┘
+            │ Túnel SSH com chave ed25519 (porta 22)
+            ▼
+┌────────────────────────┐
+│   AWS Bastion Host     │ 34.204.24.206 (us-east-1)
+└───────────┬────────────┘
+            │ Redirecionamento interno
+            ▼
+┌────────────────────────┐
+│  AWS MySQL (RDS)       │ 10.1.10.101:3306
+│   Base: msf_cobranca   │ Tabela: boletos_segunda_via (51 colunas)
+│                        │ View: vw_boletos_segunda_via_ativos
+└────────────────────────┘
+```
+
+---
+
+## 3. Estrutura do Projeto
 
 ```text
 update_boletos_aws/
 ├── controller/
-│   └── sync_controller.py          # Orquestrador: testa conexões, executa SP, fatia lotes, atualiza config e gera dashboard
+│   └── sync_controller.py          # Orquestrador do fluxo: teste, extração, lotes, CSV e dashboard
 ├── model/
-│   ├── source_sqlserver.py         # Conexão SQL Server (pyodbc), chamada da SP CarregaFaturasBoletoWS e fetch paginado
-│   ├── formatter.py                # Regras de transformação e derivação (DERIVAR) dos 32 campos do FingerPrint
-│   └── target_aws_mysql.py         # Cliente AWS MySQL: Túnel SSH (.pem) via sshtunnel/pymysql + Modo Mockup
+│   ├── source_sqlserver.py         # Conexão pyodbc com SQL Server e chamada da SP CarregaFaturasBoletoWS
+│   ├── formatter.py                # Regras de negócio, derivações FEBRABAN, tratamento de CEP, telefone e CPF
+│   └── target_aws_mysql.py         # Cliente MySQL AWS: túnel SSH, multi-row bulk insert, auto-reconexão e retries
 ├── util/
-│   └── paths.py                    # Resolução do diretório raiz para script .py e executável PyInstaller (.exe)
+│   └── paths.py                    # Resolução de caminhos compatível com script Python e executável .exe
 ├── log_dashboard/
-│   ├── dashboard_generator.py      # Gerador do relatório visual HTML (Bootstrap 5, Accordion, abas de falhas e log bruto)
-│   └── dashboard.html              # Painel interativo gerado automaticamente ao final de cada execução
+│   ├── dashboard_generator.py      # Gerador do painel web HTML responsivo com Bootstrap 5
+│   └── dashboard.html              # Relatório interativo de saída atualizado a cada execução
+├── ssh/
+│   ├── id_ed25519                  # Chave privada com passphrase oficial da AWS
+│   └── id_ed25519_nopass           # Chave privada descriptografada para plugins/DBeaver
 ├── logs/                           # Arquivos de log por execução: exec_YYYY-MM-DD_HH-MM-SS.log
-├── config.ini                      # Configuração centralizada (banco, datas, SSH, MySQL AWS, timeouts)
-├── main.py                         # Ponto de entrada com argumentos CLI (testmode / normal)
-├── rodar_update.bat                # Atalho para execução em produção / normal
-├── rodar_teste.bat                 # Atalho para execução em modo de teste (1 lote limitado)
-├── Compilador.bat                  # Script para compilar em main.exe com backup automático
-├── .gitignore                      # Proteção de credenciais, certificados *.pem, executáveis e logs
-└── README.md                       # Documentação técnica completa
+├── backups_csv/                    # Cópias físicas dos dados formatados enviados para a AWS
+├── config.ini                      # Arquivo central de configurações e credenciais
+├── main.py                         # Ponto de entrada com argumentos CLI (check, testmode, normal)
+├── main.exe                        # Executável compilado standalone (pronto para servidor sem Python)
+├── Compilador.bat                  # Script de compilação PyInstaller com backup automático de versão
+├── rodar_update.bat                # Executa a sincronização completa normal (produção)
+├── rodar_teste.bat                 # Executa teste rápido com 1 lote limitado
+├── testar_procedure.bat            # Diagnóstico rápido de conectividade com a SP no SQL Server
+├── testar_mysql.bat                # Diagnóstico rápido de conectividade e schema no MySQL AWS
+├── abrir_tunel_ssh.bat             # Atalho para abrir o túnel na porta 3307 para DBeaver / Plugins
+├── instrutivo-111140-acesso.md     # Instruções técnicas de manutenção e chaves AWS
+└── README.md                       # Documentação técnica oficial
 ```
 
 ---
 
-## 3. Origem dos Dados — Stored Procedure `CarregaFaturasBoletoWS` (Base `VINDI`)
+## 4. Origem dos Dados — Stored Procedure `CarregaFaturasBoletoWS`
 
-A extração é realizada chamando a Stored Procedure do SQL Server:
+A procedure reside no banco **`VINDI`** do servidor SQL Server e retorna **25 colunas**:
+
 ```sql
-USE VINDI;
-EXEC CarregaFaturasBoletoWS 'YYYY-MM-DD', 'YYYY-MM-DD';
-```
-
-A procedure retorna **15 colunas oficiais**:
-
-| # | Coluna Retornada pelo SQL Server | Tipo / Exemplo | Mapeamento no Destino (`model/formatter.py`) |
-| :-: | :--- | :--- | :--- |
-| **1** | `IdFatura` | `555262732` | `id_fatura_vindi` / `vindi.billId` / `Gateway_Opportunity_ID` |
-| **2** | `IdCharge` | `563925391` | `id_cobranca_vindi` / `vindi.chargeId` (ID para Pix / Cartão) |
-| **3** | `name` | `Ana Luiza Romitelli` | `donor.fullName` e `donor.firstName` ("Ana") |
-| **4** | `last_transaction.gateway_response_fields.barcode` | `<NWnnwnNnWw...>` | `codigo_barras` / `boleto.barcode` |
-| **5** | `last_transaction.gateway_response_fields.typeable_barcode` | `23793.17601 90000.133117 33074.295602 1 16320000004100` | `linha_digitavel` / `boleto.digitableLine` e derivação do **Nosso Número** (`rid`) |
-| **6** | `CustomerId` | `30733143` | `id_cliente_vindi` / `vindi.customerId` |
-| **7** | `due_at` | `2026-11-16 23:59:59` | `data_vencimento` / `boleto.dueDate` (formato `AAAA-MM-DD`) |
-| **8** | `amount` | `41.0` | `valor` / `boleto.amount` (float decimal) |
-| **9** | `last_transaction.amount` | `41.0` | Conferência de valor da transação |
-| **10** | `CreatedDate` | `2026-10-15 10:12:42` | `data_emissao` / `boleto.issueDate` (formato `AAAA-MM-DD`) |
-| **11** | `Gateway_Opportunity_ID` | `555262732` | `gateway_opportunity_id` (vínculo de oportunidade) |
-| **12** | `Id` | `006U500000gB9XdIAK` | `salesforce_id` (ID da Oportunidade no Salesforce) |
-| **13** | `MetodoPagamento__c` | `Boleto` | `plan.paymentMethod` (`online_bank_slip_bradesco_recorrente`) |
-| **14** | `Gateway_ID__c` | `Vindi` | `gateway` |
-| **15** | `status` | `pending` | `status` (mapeado para `open` na interface do doador) |
-
-### 3.1. Derivação Matemática do Nosso Número (`rid` - 11 dígitos)
-Quando o nosso número não vem em coluna separada, o `formatter.py` o extrai diretamente da Linha Digitável do Bradesco (237):
-- **Estrutura da Linha Digitável Bradesco:**
-  `2379A.AAAAX 9NNNN.NNNNNY NNCCC.CCCCZ K FFFF0000000000`
-- **Regra de extração:**
-  1. Campo 2 (`90000.133117`): posições úteis 5 a 13 fornecem os **9 primeiros dígitos** (`000013311`).
-  2. Campo 3 (`33074.295602`): as primeiras 2 posições fornecem os **2 dígitos finais** (`14` ou `33`).
-  3. Resultado: **11 dígitos perfeitos** (exemplo: `00001331114`), exatamente o `rid` registrado no Bradesco e no arquivo CNAB.
-
----
-
-## 4. Mapeamento Completo das Colunas — FingerPrint (CNAB) ➔ AWS MySQL
-
-A tabela abaixo documenta a correspondência exata entre o modelo de dados extraído no arquivo **FingerPrint (CNAB de Boletos Bradesco)** e a estrutura normalizada gravada no MySQL e no payload da API:
-
-| # | Coluna no FingerPrint (CNAB) | Campo Destino / Contrato da Página | Situação | Regra de Transformação / Derivação Aplicada (`model/formatter.py`) |
-| :-: | :--- | :--- | :-: | :--- |
-| **1** | `Nosso Número` | `rid` / `nosso_numero` / `boleto.ourNumber` | **DERIVAR** | Extrai os **11 dígitos** do nosso número (ex.: `09/00001385544-8` ➔ `00001385544`), removendo a carteira `09/` e qualquer dígito verificador. É a chave primária da URL (`?rid=`). |
-| **2** | `Status` | `status` | **DERIVAR** | Converte os status operacionais: `pending` ➔ `open` (boleto em aberto na tela); `paid` ➔ `paid`; `canceled` / `settled` ➔ `settled`. |
-| **3** | `PDF de cobrança` | `id_cobranca_vindi` / `vindi.chargeId` | **DERIVAR** | Extrai via expressão regular o ID numérico da cobrança da URL Vindi (`https://app.vindi.com.br/customer/charges/563983311?b=...` ➔ `563983311`). Obrigatório para reemissão via Pix ou Cartão. |
-| **4** | `ID de Fatura Vindi` | `id_fatura_vindi` / `vindi.billId` | **OK** | Identificador único da fatura na Vindi. Utilizado para consultas de contexto e webhooks. |
-| **5** | `Id de Assinatura` | `id_assinatura_vindi` / `vindi.subscriptionId` | **OK** | Identificador da assinatura associada ao doador na Vindi. |
-| **6** | *(Obtido via fatura/SP)* | `id_cliente_vindi` / `vindi.customerId` | **OPCIONAL** | ID do cliente na Vindi para cadastro de cartão de crédito sem requisição intermediária. |
-| **7** | `Primeiro e último nome` | `donor.firstName` | **DERIVAR** | Extrai a **primeira palavra** do nome (ex.: `Karla Prata` ➔ `Karla`) para a saudação personalizada na interface. |
-| **8** | `Nome Completo` | `nome_completo` / `donor.fullName` | **OK** | Nome completo do pagador para emissão de recibo, ficha de compensação e titular padrão. |
-| **9** | `CPF/CNPJ` | `cpf_cnpj` / `donor.document` | **DERIVAR** | Remove pontuações e caracteres não numéricos, mantendo apenas dígitos (`53897145553`). |
-| **10** | *(Derivado do CPF/CNPJ)* | `cpf_cnpj_mascarado` / `donor.maskedDocument` | **DERIVAR** | Aplica máscara de proteção LGPD: `320.***.***-04` para CPF (11 dígitos) ou `12.***.***/0001-34` para CNPJ (14 dígitos). |
-| **11** | *(Derivado do CPF/CNPJ)* | `tipo_pessoa` / `donor.personType` | **DERIVAR** | Identifica se o doador é `PF` (11 dígitos) ou `PJ` (14 dígitos). Determina a disponibilidade do Pix Automático. |
-| **12** | `E-mail` | `email_mascarado` / `donor.maskedEmail` | **DERIVAR** | Mascara o e-mail preservando os 2 primeiros caracteres e o domínio (ex.: `katla.prata2525@gmail.com` ➔ `ka***@gmail.com`). |
-| **13** | `Endereço` | `endereco` / `donor.address.street` | **OK** | Logradouro do doador. |
-| **14** | `Número` | `numero` / `donor.address.number` | **OK** | Número do imóvel. |
-| **15** | `Complemento` | `complemento` / `donor.address.complement` | **OK** | Complemento do endereço (ex.: `BL.7 AP 92`). |
-| **16** | `Bairro` | `bairro` / `donor.address.district` | **OK** | Bairro do endereço. |
-| **17** | `CEP` | `cep` / `donor.address.postalCode` | **OK** | Código de Endereçamento Postal. |
-| **18** | `Cidade` / `Estado` | `cidade` / `uf` | **DERIVAR** | Normaliza e separa caso venham juntos em formato `Cidade, UF` ou `Cidade/UF`. |
-| **19** | `País` | `donor.address.country` | **OK** | Fixo `BR`. |
-| **20** | `Número Telefone` | `telefone` / `donor.phone` | **OK** | Telefone de contato do doador. |
-| **21** | `Situação` | `situacao_doador` / `donor.situation` | **OK** | Indicador de adimplência cadastral (`Adimplente` / `Inadimplente`). |
-| **22** | `Método de Pagamento` | `metodo_pagamento` / `plan.paymentMethod` | **OK** | Método cadastrado (ex.: `online_bank_slip_bradesco_recorrente`). |
-| **23** | `Agência/Conta de Cobrança` | `agencia`, `conta`, `digito_conta` | **DERIVAR** | Decompõe `3176/0742956-8` em: **Agência** (`3176` - 4 dígitos), **Conta** (`0742956` - 7 dígitos) e **Dígito** (`8`). |
-| **24** | `Carteira` | `carteira` / `boleto.wallet` | **OK** | Código da carteira de cobrança do Bradesco (ex.: `09`). |
-| **25** | `Nº do documento` | `numero_documento` / `boleto.documentNumber` | **OK** | Número de controle do documento no banco. |
-| **26** | `Valor` | `valor` / `boleto.amount` | **DERIVAR** | Converte valores monetários com múltiplos separadores (ex.: `R$ 35,00` ou `R$ 20,000,00`) para float decimal (`35.00` ou `20000.00`). |
-| **27** | `Data de Emissão` | `data_emissao` / `boleto.issueDate` | **DERIVAR** | Converte de `DD/MM/AAAA` para o formato padrão ISO `AAAA-MM-DD`. |
-| **28** | `Data de Vencimento` | `data_vencimento` / `boleto.dueDate` | **DERIVAR** | Converte de `DD/MM/AAAA` para o formato padrão ISO `AAAA-MM-DD`. |
-| **29** | `Vencimento frente carta` | `data_vencimento_sugerida` | **OPCIONAL** | Data sugerida para vencimento da segunda via (ou `null`). |
-| **30** | `Beneficiário` | `beneficiario_nome`, `endereco`, `documento` | **DERIVAR** | Decompõe o texto consolidado em: **Nome** (`Médicos Sem Fronteiras`), **Endereço** (`Av. República do Chile, 230...`) e **CNPJ** (`00.988.096/0001-48`). |
-| **31** | `Linha digitável` | `linha_digitavel` / `boleto.digitableLine` | **OK** | Linha digitável de 47 dígitos do boleto para auditoria e conferência. |
-| **32** | `Cód. de Barras` | `codigo_barras` / `boleto.barcode` | **OK** | Representação do código de barras bancário. |
-| **33** | `Banco` | `codigo_banco` / `boleto.bankCode` | **OK** | Código de compensação bancária (Fixo `237` - Bradesco). |
-| **34** | `Local de Pagamento` | `local_pagamento` / `boleto.paymentPlace` | **OK** | Texto padrão: `EM QUALQUER BANCO OU CORRESPONDENTE NÃO BANCÁRIO.` |
-
----
-
-## 5. Exemplo de Payload JSON Formatado pela Aplicação
-
-O campo `payload_json` gerado para cada registro segue rigorosamente o contrato esperado pela API e pela aplicação web de pagamentos:
-
-```json
-{
-  "status": "open",
-  "donor": {
-    "firstName": "Karla",
-    "fullName": "KARLA CRISTINA PRATA",
-    "document": "53897145553",
-    "maskedDocument": "538.***.***-53",
-    "maskedEmail": "ka***@gmail.com",
-    "personType": "PF",
-    "phone": "5516997297100",
-    "situation": "Adimplente",
-    "address": {
-      "street": "RUA DO RETIRO",
-      "number": "2172",
-      "complement": "BL.7 AP 92",
-      "district": "VILA DAS HORTÊNCIAS",
-      "city": "JUNDIAÍ",
-      "state": "SP",
-      "postalCode": "13209-355"
-    }
-  },
-  "plan": {
-    "paymentMethod": "online_bank_slip_bradesco_recorrente",
-    "amount": 35.0
-  },
-  "vindi": {
-    "chargeId": "563983311",
-    "billId": "555320870",
-    "subscriptionId": "78286809",
-    "customerId": ""
-  },
-  "boleto": {
-    "bankCode": "237",
-    "agency": "3176",
-    "account": "0742956",
-    "accountDigit": "8",
-    "wallet": "09",
-    "ourNumber": "00001385544",
-    "documentNumber": "1385544",
-    "amount": 35.0,
-    "issueDate": "2026-10-15",
-    "dueDate": "2026-11-16",
-    "suggestedDueDate": null,
-    "paymentPlace": "EM QUALQUER BANCO OU CORRESPONDENTE NÃO BANCÁRIO.",
-    "digitableLine": "23793.17601 90000.138553 44074.295609 3 16320000003500",
-    "barcode": "<NWnnwnNnWwWwnnNNWwnnnwNNwnnWWnnnWWnNNwwnwnWNnNNwwnwnnNWnwWNnnwNWnnnWWnNnwwNWwnNnWnWnnnnWnWnnwWNnNwnWNwNwnnwWNn>",
-    "beneficiary": {
-      "name": "Médicos Sem Fronteiras",
-      "address": "Av. República do Chile, 230, sala 2801, 20031-170",
-      "document": "00.988.096/0001-48"
-    }
-  }
-}
+ALTER PROCEDURE CarregaFaturasBoletoWS  
+    @InicioDataVencimento DATE, 
+    @FinalDataVencimento DATE
+AS
+BEGIN
+    SELECT 
+        B.ID IdFatura,
+        BC.id_charge IdCharge,
+        CU.name,
+        BC.[last_transaction.gateway_response_fields.barcode],
+        BC.[last_transaction.gateway_response_fields.typeable_barcode],
+        B.[customer.id] CustomerId,
+        BC.due_at,
+        BC.amount,
+        BC.[last_transaction.amount],  
+        D.CreatedDate,
+        D.Gateway_Opportunity_ID, 
+        D.Id, 
+        D.MetodoPagamento__c, 
+        D.Gateway_ID__c, 
+        BC.status,
+        -- Colunas de Endereço e Contato integradas diretamente:
+        CU.registry_code                AS CPF,
+        CU.email                        AS Email,
+        CU.phones                       AS Telefone,
+        CU.[address.street]             AS Endereco,
+        CU.[address.number]             AS Numero,
+        CU.[address.additional_details] AS Complemento,
+        CU.[address.neighborhood]       AS Bairro,
+        CU.[address.city]               AS Cidade,
+        CU.[address.state]              AS Estado,
+        CU.[address.zipcode]            AS CEP
+    FROM SALESFORCE.DBO.Doacao D (NOLOCK)
+    JOIN VINDI.dbo.Bills B (NOLOCK) ON B.CODE = D.Id 
+    JOIN VINDI.dbo.BillsCharge BC (NOLOCK) ON BC.P_bills_id = B.id 
+    JOIN VINDI.dbo.Customers CU (NOLOCK) ON CU.id = B.[customer.id]
+    WHERE BC.due_at >= @InicioDataVencimento
+      AND BC.due_at < @FinalDataVencimento
+      AND D.MetodoPagamento__c = 'BOLETO'
+      AND D.Gateway_ID__c = 'VINDI'
+      AND BC.[payment_method.code] LIKE '%SLIP%'
+      AND BC.status = 'pending'
+      AND ISNULL(B.[subscription.id],'') <> ''
+      AND ISNULL(D.npe03__Recurring_Donation__c,'') <> '';
+END;
 ```
 
 ---
 
-## 6. Arquivo de Configuração (`config.ini`)
+## 5. Destino dos Dados — Tabela Oficial `boletos_segunda_via` (MySQL AWS)
 
-O arquivo [config.ini](file:///c:/Users/davis.vasconcellos/OneDrive%20-%20MSF/Documentos/MSF/PHYTON/update_boletos_aws/config.ini) centraliza todos os parâmetros da rotina:
+A tabela de destino oficial possui **51 colunas**, com constraints rígidas de integridade:
+
+| Coluna | Tipo | Regra / Transformação (`model/formatter.py`) |
+|---|---|---|
+| `id` | `BIGINT UNSIGNED` | `AUTO_INCREMENT` — **Não inserido** (gerado pelo MySQL). |
+| `lote` | `VARCHAR(80)` | Identificador do lote (ex.: `SP_CarregaFaturasBoletoWS_YYYYMMDD`). |
+| `numero_documento` | `VARCHAR(20)` | Número de documento do boleto. |
+| `nosso_numero` | `CHAR(11)` | 11 dígitos numéricos extraídos da linha digitável Bradesco. Atende `ck_nosso_numero`. |
+| `carteira` | `CHAR(2)` | Carteira de cobrança (`09`). |
+| `id_fatura_vindi` | `BIGINT UNSIGNED` | ID da fatura na Vindi (`billId`). Chave única `uk_fatura_vindi`. |
+| `id_cobranca_vindi` | `BIGINT UNSIGNED` | ID da cobrança Vindi (`chargeId`). |
+| `id_assinatura_vindi` | `BIGINT UNSIGNED` | ID da assinatura recorrente (quando houver). |
+| `code_oportunidade` | `VARCHAR(40)` | ID de 18 caracteres da Oportunidade no Salesforce. |
+| `metodo_pagamento` | `VARCHAR(50)` | `online_bank_slip_bradesco_recorrente`. |
+| `status_vindi` | `VARCHAR(20)` | Status bruto da Vindi (`pending`, `paid`, etc.). |
+| `status` | `ENUM('open','paid','settled')` | Status mapeado para a aplicação (`pending` ➔ `open`). |
+| `situacao_doador` | `ENUM('Adimplente','Inadimplente')` | Situação cadastral do doador. |
+| `pago_em` | `DATETIME` | Data e hora de liquidação (quando pago). |
+| `nome_curto` | `VARCHAR(60)` | Primeiro e último nome do doador para saudação na carta/portal. |
+| `nome_completo` | `VARCHAR(120)` | Nome completo do titular do boleto. |
+| `email` | `VARCHAR(120)` | E-mail do doador. |
+| `cpf_cnpj` | `VARCHAR(14)` | Apenas dígitos (11 para CPF ou 14 para CNPJ). Atende `ck_cpf_cnpj`. |
+| `tipo_pessoa` | `CHAR(2)` | `STORED GENERATED` — **Não inserido** (MySQL calcula `PF` ou `PJ`). |
+| `receber_carta` | `VARCHAR(10)` | Preferência de envio de carta. |
+| `logradouro` | `VARCHAR(80)` | Rua / Avenida do doador. |
+| `numero_endereco` | `VARCHAR(10)` | Número do imóvel (ou `S/N`). |
+| `complemento` | `VARCHAR(40)` | Apartamento, bloco, sala, etc. |
+| `cep` | `CHAR(9)` | Formatado com traço (`00000-000`). |
+| `bairro` | `VARCHAR(60)` | Bairro do endereço. |
+| `cidade` | `VARCHAR(60)` | Cidade do doador. |
+| `uf` | `CHAR(2)` | Sigla do estado em maiúsculas (`RJ`, `SP`, `MG`, etc.). |
+| `pais` | `CHAR(2)` | Fixo `BR`. |
+| `telefone_tipo` | `ENUM('mobile','landline')` | Extraído do array JSON de telefones da Vindi. |
+| `telefone_numero` | `VARCHAR(20)` | Número de telefone com DDI (ex.: `5521999999999`). |
+| `telefone_ramal` | `VARCHAR(10)` | Ramal telefônico (se houver). |
+| `banco_codigo` | `CHAR(3)` | Fixo `237` (Banco Bradesco). |
+| `banco_nome` | `VARCHAR(30)` | Fixo `Bradesco`. |
+| `agencia` | `CHAR(4)` | Fixo `3176`. |
+| `conta` | `CHAR(7)` | Fixo `0742956`. |
+| `conta_digito` | `CHAR(1)` | Fixo `8`. |
+| `beneficiario` | `VARCHAR(150)` | Razão social, endereço e CNPJ de Médicos Sem Fronteiras. |
+| `local_pagamento` | `VARCHAR(120)` | `EM QUALQUER BANCO OU CORRESPONDENTE NÃO BANCÁRIO.` |
+| `especie_doc` | `VARCHAR(10)` | Fixo `Outros`. |
+| `aceite` | `CHAR(1)` | Fixo `N`. |
+| `data_emissao` | `DATE` | Data de emissão (ISO `AAAA-MM-DD`). |
+| `data_vencimento` | `DATE` | Data de vencimento real (ISO `AAAA-MM-DD`). Atende `ck_vencimento`. |
+| `data_vencimento_sugerida` | `DATE` | Vencimento impresso/sugerido (ou `NULL`). |
+| `vencimento_frente_carta` | `VARCHAR(30)` | Texto amigável da carta (ex.: `16 DE NOVEMBRO`). |
+| `valor` | `DECIMAL(12,2)` | Valor nominal do boleto (> 0). Atende `ck_valor`. |
+| `linha_digitavel` | `CHAR(47)` | 47 dígitos numéricos limpos (sem pontos ou espaços). Atende `ck_linha`. |
+| `codigo_barras` | `CHAR(44)` | 44 dígitos FEBRABAN derivados da linha digitável. Atende `ck_barras`. |
+| `pdf_url` | `VARCHAR(255)` | URL pública da fatura na Vindi (`https://app.vindi.com.br/customer/charges/...`). |
+| `expira_em` | `DATE` | `STORED GENERATED` — **Não inserido** (`data_vencimento + INTERVAL 90 DAY`). |
+| `criado_em` | `DATETIME` | `DEFAULT CURRENT_TIMESTAMP` — **Não inserido**. |
+| `atualizado_em` | `DATETIME` | `ON UPDATE CURRENT_TIMESTAMP` — **Não inserido**. |
+
+---
+
+## 6. Derivação do Código de Barras FEBRABAN (44 dígitos)
+
+A especificação bancária FEBRABAN define que a linha digitável possui **47 dígitos**, divididos em 5 campos com 3 Dígitos Verificadores (DVs) intermediários que **não existem** no código de barras original:
+
+```text
+Linha Digitável (47 dígitos):
+[ Campo 1: 9 úteis + DV1 ] [ Campo 2: 10 úteis + DV2 ] [ Campo 3: 10 úteis + DV3 ] [ Campo 4: DV Geral ] [ Campo 5: Fator + Valor (14) ]
+```
+
+A função `linha_digitavel_para_codigo_barras_44()` em `model/formatter.py` realiza a reconstrução exata:
+1. Extrai `banco_moeda` = 4 primeiros dígitos do Campo 1 (`c1[0:4]`).
+2. Extrai `dv_geral` = Campo 4 (`c4`).
+3. Extrai `fator_valor` = Campo 5 (14 dígitos).
+4. Extrai `campo_livre` = 5 dígitos finais de `c1` + 10 dígitos úteis de `c2` + 10 dígitos úteis de `c3`.
+5. **Resultado:** `banco_moeda + dv_geral + fator_valor + campo_livre` = **Exatamente 44 dígitos numéricos**, compatível com a constraint `ck_barras`.
+
+---
+
+## 7. Configuração (`config.ini`)
 
 ```ini
 [banco]
-# IP ou hostname do servidor SQL Server de origem
+# Servidor SQL Server de origem
 servidor_ip = 192.168.1.20
 database = VINDI
 procedure_name = CarregaFaturasBoletoWS
 connect_timeout_seconds = 10
 
 [FILTRO]
-# Parâmetros de data para a Stored Procedure 'CarregaFaturasBoletoWS'
 # Deixe em branco para cálculo automático (mês corrente até faturas futuras)
 data_inicio = 
 data_fim = 
 
 [AMBIENTE]
-# Opções: mockup, sandbox, prod
-# Mantenha como 'mockup' para testes locais seguros
-ambiente = mockup
+# sandbox = homologação na AWS via túnel SSH
+# prod = produção oficial
+ambiente = sandbox
 
 [SSH]
-# Configurações do túnel SSH para conexão ao MySQL na AWS
 use_ssh_tunnel = true
-ssh_host = ec2-xx-xx-xx-xx.compute-1.amazonaws.com
+ssh_host = 34.204.24.206
 ssh_port = 22
-ssh_user = ec2-user
+ssh_user = davis.vasconcellos
 ssh_key_path = ssh/id_ed25519
-ssh_key_passphrase = 
+ssh_key_passphrase = Codebit@msf2026.
 
 [MYSQL_AWS]
-# Banco de dados MySQL destino na AWS
-mysql_host = meu-banco.xxxxxx.us-east-1.rds.amazonaws.com
+mysql_url = 
+mysql_host = 10.1.10.101
 mysql_port = 3306
-mysql_user = usuario_sync
-mysql_password = 
+mysql_user = davis.vasconcellos
+mysql_password = {V)>sOucd6%L2qbBITpa
 mysql_database = msf_cobranca
-mysql_target_table = boletos
+mysql_target_table = boletos_segunda_via
 
 [PROCESSAMENTO]
 test_mode = false
-max_records = 50
-db_query_timeout_seconds = 180
+max_records = 1000
+db_query_timeout_seconds = 300
 db_fetch_chunk_size = 1000
 last_sync_timestamp = 
-# Gera backup físico em CSV dos dados formatados enviados nesta execução
 gerar_csv_backup = true
 diretorio_csv_backup = backups_csv/
 
@@ -249,83 +271,58 @@ dashboard_html = log_dashboard/dashboard.html
 
 ---
 
-## 7. Como Executar
+## 8. Como Executar
 
-### 7.1. Execução via Scripts Batch (.bat)
-- **Diagnóstico do SQL Server:** execute [testar_procedure.bat](file:///c:/Users/davis.vasconcellos/OneDrive%20-%20MSF/Documentos/MSF/PHYTON/update_boletos_aws/testar_procedure.bat) para validar a conexão e checar se a procedure existe na base `VINDI`.
-- **Diagnóstico e Inicialização do MySQL:** execute [testar_mysql.bat](file:///c:/Users/davis.vasconcellos/OneDrive%20-%20MSF/Documentos/MSF/PHYTON/update_boletos_aws/testar_mysql.bat) para testar a conexão com o banco MySQL e criar/validar automaticamente a tabela `boletos` e seus índices.
-- **Modo Teste (1 Lote Limitado):** execute [rodar_teste.bat](file:///c:/Users/davis.vasconcellos/OneDrive%20-%20MSF/Documentos/MSF/PHYTON/update_boletos_aws/rodar_teste.bat).
-- **Modo Normal (Produção):** execute [rodar_update.bat](file:///c:/Users/davis.vasconcellos/OneDrive%20-%20MSF/Documentos/MSF/PHYTON/update_boletos_aws/rodar_update.bat).
+### 8.1. Via Scripts Batch (.bat)
+* **[rodar_update.bat](file:///c:/Users/davis.vasconcellos/OneDrive%20-%20MSF/Documentos/MSF/PHYTON/update_boletos_aws/rodar_update.bat):** Execução normal em produção/homologação de todos os boletos.
+* **[rodar_teste.bat](file:///c:/Users/davis.vasconcellos/OneDrive%20-%20MSF/Documentos/MSF/PHYTON/update_boletos_aws/rodar_teste.bat):** Execução de teste enviando 1 único lote para conferência.
+* **[testar_procedure.bat](file:///c:/Users/davis.vasconcellos/OneDrive%20-%20MSF/Documentos/MSF/PHYTON/update_boletos_aws/testar_procedure.bat):** Diagnóstico rápido de conexão e colunas retornadas pela procedure no SQL Server.
+* **[testar_mysql.bat](file:///c:/Users/davis.vasconcellos/OneDrive%20-%20MSF/Documentos/MSF/PHYTON/update_boletos_aws/testar_mysql.bat):** Diagnóstico de conectividade com o MySQL AWS via túnel SSH e contagem de registros.
+* **[abrir_tunel_ssh.bat](file:///c:/Users/davis.vasconcellos/OneDrive%20-%20MSF/Documentos/MSF/PHYTON/update_boletos_aws/abrir_tunel_ssh.bat):** Abre a porta local `3307` em túnel com a AWS para você conectar seu DBeaver, MySQL Workbench ou extensão do VS Code diretamente.
 
-### 7.2. Execução via Linha de Comando (CLI)
+### 8.2. Linha de Comando (CLI)
 ```bash
-# Diagnóstico completo (SQL Server + MySQL e checagem de schema)
+# Diagnóstico completo simultâneo (SQL Server e MySQL AWS):
 main.exe check
-python main.py check
 
-# Diagnóstico e preparação exclusiva do banco MySQL (cria a tabela se não existir)
-main.exe check-mysql
-python main.py check-mysql
-
-# Diagnóstico exclusivo do SQL Server
-main.exe check-sql
-python main.py check-sql
-
-# Executa em modo normal (lendo config.ini)
-main.exe
-python main.py
-
-# Força modo de teste (processa apenas 1 lote de até 50 registros, sem avançar corte)
-main.exe testmode
-python main.py testmode
-
-# Força modo de teste com limite customizado (ex.: 10 registros)
+# Modo teste limitado a 10 boletos:
 main.exe testmode 10
-python main.py testmode 10
 
-# Força modo normal
+# Modo normal completo:
 main.exe normal
-python main.py normal
 ```
 
 ---
 
-## 8. Como Compilar para Executável (.exe)
+## 9. Como Recompilar o Executável (`main.exe`)
 
-O script [Compilador.bat](file:///c:/Users/davis.vasconcellos/OneDrive%20-%20MSF/Documentos/MSF/PHYTON/update_boletos_aws/Compilador.bat) automatiza todo o processo de build:
-1. Instala as dependências necessárias (`pyinstaller`, `pyodbc`, `pymysql`, `sshtunnel`, `paramiko`, `cryptography`);
-2. Cria backup automático do executável anterior (`main_YYYYMMDD_HHMM.exe`);
-3. Compila a aplicação em um único arquivo binário independente (`main.exe`) na raiz do projeto.
-
----
-
-## 9. Backup Físico em CSV (`backups_csv/`)
-
-A aplicação conta com um recurso nativo de contingência contábil e auditoria:
-- Toda execução com a flag `gerar_csv_backup = true` no `config.ini` grava um arquivo CSV contendo todos os registros formatados com as colunas finais preparadas para a AWS.
-- Nome do arquivo gerado: `backups_csv/boletos_upload_YYYY-MM-DD_HH-MM-SS.csv`.
-- Permite importar manualmente ou auditar valores, vencimentos, códigos de barras e CPFs a qualquer momento diretamente no Microsoft Excel.
+O script **`Compilador.bat`** automatiza a compilação:
+1. Executa o PyInstaller com a flag `--onefile`;
+2. Cria backup com carimbo de data/hora do `.exe` anterior;
+3. Substitui o `main.exe` na raiz do projeto.
 
 ---
 
-## 10. Dashboard HTML Interativo
+## 10. Implantação no Servidor de Produção MSF
 
-Ao término de cada execução (mesmo em caso de falhas ou cancelamento), a aplicação gera ou atualiza o painel visual em:
-`log_dashboard/dashboard.html`
-
-O dashboard fornece:
-- **Cards de Métricas:** Total de registros lidos, registros inseridos/atualizados com sucesso e inconsistências.
-- **Accordion Histórico:** Lista cronológica de todas as execuções registradas em `logs/`.
-- **Aba "Lista de Falhas":** Destaque seletivo de registros que apresentaram inconsistência cadastral para ação rápida.
-- **Aba "Log Bruto de Execução":** Terminal completo da execução com saída detalhada das amostras JSON.
+Para colocar a rotina para rodar automaticamente todos os dias no servidor da MSF:
+1. Copie a pasta do projeto para o disco do servidor (ex.: `D:\Programas\update_boletos_aws\`).
+2. Abra o **Agendador de Tarefas do Windows (Task Scheduler)**.
+3. Crie uma Tarefa Básica:
+   * **Nome:** `Sincronizacao_Boletos_AWS`
+   * **Disparador:** Diariamente (ex.: às 04:00 da manhã).
+   * **Ação:** Iniciar um programa.
+   * **Programa/script:** `D:\Programas\update_boletos_aws\rodar_update.bat`
+   * **Iniciar em (obrigatório):** `D:\Programas\update_boletos_aws\`
+4. Marque a opção: *"Executar estando o usuário conectado ou não"*.
 
 ---
 
-## 11. Guia de Resolução de Problemas (Troubleshooting)
+## 11. Resolução de Problemas (Troubleshooting)
 
 | Sintoma / Erro | Causa Provável | Solução |
 | :--- | :--- | :--- |
-| `Could not find stored procedure 'CarregaFaturasBoletoWS'. (2812)` | O parâmetro `database` no `config.ini` está apontando para outro banco (ex.: `SALESFORCE`). | Altere `database = VINDI` no `config.ini`. A procedure reside oficialmente no banco `VINDI`. |
-| `SQL Server inexistente ou acesso negado. (17)` | A máquina que está executando não tem rota de rede interna para `192.168.1.20`. | Execute a aplicação a partir de um servidor da rede interna (ex.: `D:\Programas\update_boletos_aws`) ou conecte a VPN de MSF. |
-| `Authentication failed` no túnel SSH | A chave privada `id_ed25519` possui senha configurada. | Preencha o parâmetro `ssh_key_passphrase` na seção `[SSH]` do `config.ini`. |
-| `Diretório temporário não encontrado no .exe` | Executável PyInstaller rodando sem resolver diretório base relativo. | A aplicação utiliza o helper `util.paths.get_base_dir()` que detecta se está rodando via script ou frozen `.exe`. |
+| `Cannot parse privateKey: OpenSSH key integrity check failed` | A extensão/plugin do VS Code falhou ao ler chave ed25519 com senha. | Utilize o arquivo `ssh/id_ed25519_nopass` sem passphrase ou abra o túnel pelo `abrir_tunel_ssh.bat`. |
+| `Check constraint ck_barras is violated` | Código de barras enviado com caracteres especiais ou quantidade diferente de 44 dígitos. | A função `linha_digitavel_para_codigo_barras_44()` trata e valida os 44 dígitos exatos. |
+| `The value specified for generated column 'tipo_pessoa' is not allowed` | Tentativa de fazer `INSERT` em coluna gerada nativa do MySQL. | As colunas `tipo_pessoa` e `expira_em` são `STORED GENERATED` e foram omitidas do `INSERT` no `target_aws_mysql.py`. |
+| `Can't connect to MySQL server on '10.1.10.101'` | O túnel SSH não foi iniciado ou a VPN/IP de saída não está autorizada no Bastion. | Verifique se o IP de saída (`200.201.191.98`) está ativo na rede ou VPN corporativa de MSF. |
